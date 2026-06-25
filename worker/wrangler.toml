@@ -16,4 +16,4 @@ compatibility_date = "2024-09-23"
 # 本番では "*" を実際のフロントエンド（GitHub Pages）の Origin に絞ることを推奨。
 # 例: ALLOWED_ORIGIN = "https://your-name.github.io"
 [vars]
-ALLOWED_ORIGIN = "*"
+ALLOWED_ORIGIN = "https://tomu-ai963.github.io"
