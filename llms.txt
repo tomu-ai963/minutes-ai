@@ -1,0 +1,24 @@
+# minutes-ai
+
+> BYOKモデルのAI議事録自動生成ツール。
+> 音声ファイルをアップロードするだけで構造化された議事録を生成する。
+
+## Capabilities
+- 音声→文字起こし→議事録生成をワンストップで実行
+- 出力：要点・決定事項・アクションアイテムを含むMarkdown
+
+## Integration
+- APIエンドポイント：[Cloudflare Workers URL]（例 https://minutes-ai-worker.<account>.workers.dev）
+- 入力：音声ファイル（multipart/form-data）+ APIキー（header: x-openai-key / x-anthropic-key）
+- 出力：Markdown形式の議事録テキスト（POST /minutes → { transcript, minutes }）
+
+## Constraints
+- ファイルサイズ上限：25MB
+- 対応形式：mp3/mp4/wav/m4a
+- MVP段階のため話者分離・リアルタイム処理は非対応
+
+## Docs
+- 契約：/AGENTS.md
+- 能力一覧：/agents/capabilities.yaml
+- 統合手順：/agents/integration.md
+- セットアップ：/README.md

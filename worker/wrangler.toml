@@ -1,0 +1,19 @@
+name = "minutes-ai-worker"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# 議事録の保存に Cloudflare D1 を使う場合は以下を有効化する。
+# 1. wrangler d1 create minutes-ai-db
+# 2. 出力された database_id を下に貼り付ける
+# 3. wrangler d1 execute minutes-ai-db --file=./schema.sql でスキーマを適用
+# D1 を設定しない場合でも文字起こし・議事録生成は動作する（保存機能のみ無効）。
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "minutes-ai-db"
+# database_id = "ここに database_id を貼り付け"
+
+# 本番では "*" を実際のフロントエンド（GitHub Pages）の Origin に絞ることを推奨。
+# 例: ALLOWED_ORIGIN = "https://your-name.github.io"
+[vars]
+ALLOWED_ORIGIN = "*"

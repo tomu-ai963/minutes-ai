@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>minutes-ai — AI議事録ツール</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-2: #273449;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --danger: #ef4444;
+      --ok: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    header {
+      padding: 24px 20px;
+      border-bottom: 1px solid var(--border);
+      text-align: center;
+    }
+    header h1 { margin: 0; font-size: 1.5rem; }
+    header p { margin: 4px 0 0; color: var(--muted); font-size: .9rem; }
+    main { max-width: 860px; margin: 0 auto; padding: 24px 20px 80px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .card h2 { margin: 0 0 14px; font-size: 1.1rem; }
+    label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 6px; }
+    input[type="text"], input[type="password"], select {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: .95rem;
+      margin-bottom: 14px;
+    }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .row > div { flex: 1; min-width: 220px; }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: .95rem;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    button:hover:not(:disabled) { background: var(--accent-hover); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    button.secondary { background: var(--panel-2); border: 1px solid var(--border); }
+    button.secondary:hover:not(:disabled) { background: var(--border); }
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 34px 20px;
+      text-align: center;
+      color: var(--muted);
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .dropzone.drag { border-color: var(--accent); background: rgba(99,102,241,.08); }
+    .dropzone strong { color: var(--text); }
+    .filename { margin-top: 12px; font-size: .9rem; color: var(--text); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+    #status { margin-top: 14px; font-size: .9rem; min-height: 1.4em; }
+    #status.err { color: var(--danger); }
+    #status.ok { color: var(--ok); }
+    #status.work { color: var(--accent); }
+    .output-wrap { display: none; }
+    pre.output {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 520px;
+      overflow: auto;
+      font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      font-size: .9rem;
+    }
+    details { margin-top: 14px; }
+    summary { cursor: pointer; color: var(--muted); }
+    .hint { font-size: .8rem; color: var(--muted); margin-top: -8px; margin-bottom: 14px; }
+    a { color: var(--accent); }
+    .spinner {
+      display: inline-block; width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.3); border-top-color: #fff;
+      border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📝 minutes-ai</h1>
+    <p>音声ファイルから議事録を自動生成（BYOK：APIキーはお手元のブラウザに保存されます）</p>
+  </header>
+
+  <main>
+    <!-- 設定 -->
+    <section class="card">
+      <h2>⚙️ 設定</h2>
+      <div>
+        <label for="workerUrl">Worker エンドポイント URL</label>
+        <input id="workerUrl" type="text" placeholder="https://minutes-ai-worker.xxxx.workers.dev" />
+        <p class="hint">Cloudflare Workers にデプロイした URL を入力してください。</p>
+      </div>
+      <div class="row">
+        <div>
+          <label for="openaiKey">OpenAI APIキー（Whisper 用）</label>
+          <input id="openaiKey" type="password" placeholder="sk-..." autocomplete="off" />
+        </div>
+        <div>
+          <label for="anthropicKey">Anthropic APIキー（Claude 用）</label>
+          <input id="anthropicKey" type="password" placeholder="sk-ant-..." autocomplete="off" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="language">音声の言語（任意・精度向上用）</label>
+          <select id="language">
+            <option value="">自動判定</option>
+            <option value="ja">日本語</option>
+            <option value="en">英語</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="saveSettings">設定を保存</button>
+        <button id="clearSettings" class="secondary">保存した設定を消去</button>
+      </div>
+      <p class="hint">※ APIキー・設定は <strong>このブラウザの localStorage</strong> にのみ保存され、サーバーには送信されません（API呼び出し時を除く）。</p>
+    </section>
+
+    <!-- アップロード -->
+    <section class="card">
+      <h2>🎙️ 音声ファイル</h2>
+      <div id="dropzone" class="dropzone">
+        <strong>クリックして選択</strong> またはドラッグ＆ドロップ<br />
+        <span class="hint">対応形式: mp3 / mp4 / wav / m4a ・ 上限 25MB</span>
+        <div id="filename" class="filename"></div>
+      </div>
+      <input id="fileInput" type="file" accept=".mp3,.mp4,.wav,.m4a,audio/*,video/mp4" style="display:none" />
+      <div class="actions" style="margin-top:16px">
+        <button id="runBtn" disabled>議事録を生成</button>
+      </div>
+      <div id="status"></div>
+    </section>
+
+    <!-- 出力 -->
+    <section class="card output-wrap" id="outputWrap">
+      <h2>📄 生成された議事録</h2>
+      <div class="actions" style="margin-bottom:14px">
+        <button id="copyBtn" class="secondary">コピー</button>
+        <button id="downloadBtn" class="secondary">Markdown をダウンロード</button>
+      </div>
+      <pre class="output" id="output"></pre>
+      <details>
+        <summary>文字起こし全文を表示</summary>
+        <pre class="output" id="transcript" style="margin-top:10px"></pre>
+      </details>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+    const $ = (id) => document.getElementById(id);
+    const LS = {
+      url: "minutesai_worker_url",
+      openai: "minutesai_openai_key",
+      anthropic: "minutesai_anthropic_key",
+      lang: "minutesai_language",
+    };
+    const ALLOWED_EXT = ["mp3", "mp4", "wav", "m4a"];
+    const MAX_SIZE = 25 * 1024 * 1024;
+    let selectedFile = null;
+
+    /* ---- 設定の読み書き（localStorage） ---- */
+    function loadSettings() {
+      $("workerUrl").value = localStorage.getItem(LS.url) || "";
+      $("openaiKey").value = localStorage.getItem(LS.openai) || "";
+      $("anthropicKey").value = localStorage.getItem(LS.anthropic) || "";
+      $("language").value = localStorage.getItem(LS.lang) || "";
+    }
+    function saveSettings() {
+      localStorage.setItem(LS.url, $("workerUrl").value.trim().replace(/\/+$/, ""));
+      localStorage.setItem(LS.openai, $("openaiKey").value.trim());
+      localStorage.setItem(LS.anthropic, $("anthropicKey").value.trim());
+      localStorage.setItem(LS.lang, $("language").value);
+      setStatus("設定を保存しました。", "ok");
+    }
+    function clearSettings() {
+      Object.values(LS).forEach((k) => localStorage.removeItem(k));
+      loadSettings();
+      setStatus("保存した設定を消去しました。", "ok");
+    }
+
+    /* ---- ステータス表示 ---- */
+    function setStatus(msg, kind, busy) {
+      const el = $("status");
+      el.className = kind || "";
+      el.innerHTML = (busy ? '<span class="spinner"></span>' : "") + (msg || "");
+    }
+
+    /* ---- ファイル選択 ---- */
+    function pickFile(file) {
+      if (!file) return;
+      const ext = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
+      if (!ALLOWED_EXT.includes(ext)) {
+        setStatus("非対応のファイル形式です。対応形式: mp3 / mp4 / wav / m4a", "err");
+        selectedFile = null; $("runBtn").disabled = true; $("filename").textContent = "";
+        return;
+      }
+      if (file.size > MAX_SIZE) {
+        setStatus("ファイルサイズが上限（25MB）を超えています。", "err");
+        selectedFile = null; $("runBtn").disabled = true; $("filename").textContent = "";
+        return;
+      }
+      selectedFile = file;
+      $("filename").textContent = `選択中: ${file.name}（${(file.size / 1024 / 1024).toFixed(1)}MB）`;
+      $("runBtn").disabled = false;
+      setStatus("");
+    }
+
+    /* ---- 議事録生成（Worker の /minutes を呼ぶ） ---- */
+    async function run() {
+      const url = localStorage.getItem(LS.url) || $("workerUrl").value.trim().replace(/\/+$/, "");
+      const openaiKey = $("openaiKey").value.trim();
+      const anthropicKey = $("anthropicKey").value.trim();
+
+      if (!url) { setStatus("Worker エンドポイント URL を入力してください。", "err"); return; }
+      if (!openaiKey) { setStatus("OpenAI APIキーを入力してください。", "err"); return; }
+      if (!anthropicKey) { setStatus("Anthropic APIキーを入力してください。", "err"); return; }
+      if (!selectedFile) { setStatus("音声ファイルを選択してください。", "err"); return; }
+
+      $("runBtn").disabled = true;
+      setStatus("文字起こし・議事録を生成しています…（音声の長さによっては数分かかります）", "work", true);
+
+      const fd = new FormData();
+      fd.append("file", selectedFile);
+      const lang = $("language").value;
+      if (lang) fd.append("language", lang);
+
+      try {
+        const resp = await fetch(url + "/minutes", {
+          method: "POST",
+          headers: { "x-openai-key": openaiKey, "x-anthropic-key": anthropicKey },
+          body: fd,
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          setStatus(data.error || `エラーが発生しました（${resp.status}）。`, "err");
+          return;
+        }
+        $("output").textContent = data.minutes || "";
+        $("transcript").textContent = data.transcript || "";
+        $("outputWrap").style.display = "block";
+        setStatus("議事録を生成しました。", "ok");
+        $("outputWrap").scrollIntoView({ behavior: "smooth" });
+      } catch (e) {
+        setStatus("通信に失敗しました。Worker の URL と CORS 設定をご確認ください。", "err");
+      } finally {
+        $("runBtn").disabled = false;
+      }
+    }
+
+    /* ---- コピー / ダウンロード ---- */
+    async function copyOutput() {
+      const text = $("output").textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        setStatus("議事録をコピーしました。", "ok");
+      } catch {
+        setStatus("コピーに失敗しました。手動で選択してコピーしてください。", "err");
+      }
+    }
+    function downloadOutput() {
+      const text = $("output").textContent;
+      const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      a.href = URL.createObjectURL(blob);
+      a.download = `議事録_${stamp}.md`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    /* ---- イベント登録 ---- */
+    function init() {
+      loadSettings();
+      $("saveSettings").addEventListener("click", saveSettings);
+      $("clearSettings").addEventListener("click", clearSettings);
+      $("runBtn").addEventListener("click", run);
+      $("copyBtn").addEventListener("click", copyOutput);
+      $("downloadBtn").addEventListener("click", downloadOutput);
+
+      const dz = $("dropzone");
+      dz.addEventListener("click", () => $("fileInput").click());
+      $("fileInput").addEventListener("change", (e) => pickFile(e.target.files[0]));
+      ["dragenter", "dragover"].forEach((ev) =>
+        dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); })
+      );
+      ["dragleave", "drop"].forEach((ev) =>
+        dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); })
+      );
+      dz.addEventListener("drop", (e) => pickFile(e.dataTransfer.files[0]));
+    }
+    init();
+  </script>
+</body>
+</html>

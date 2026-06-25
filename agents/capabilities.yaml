@@ -1,0 +1,21 @@
+name: minutes-ai
+version: 0.1.0
+type: byok-saas
+description: 音声ファイルから議事録を自動生成するBYOKツール
+
+can:
+  - 音声ファイル（mp3/mp4/wav/m4a）の文字起こし
+  - 日本語・英語の会議議事録生成
+  - Markdown形式での出力・ダウンロード
+
+cannot:
+  - リアルタイム文字起こし（MVP段階では非対応）
+  - Zoom/Teams/Meetとの直接連携（MVP段階では非対応）
+  - 話者分離（MVP段階では非対応）
+  - 25MB以上のファイル処理
+
+requires:
+  - OpenAI APIキー（Whisper用）
+  - Anthropic APIキー（Claude用）
+
+pricing: BYOK（APIコストはユーザー負担）
