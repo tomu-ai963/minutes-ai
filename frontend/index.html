@@ -308,6 +308,14 @@
     /* ---- イベント登録 ---- */
     function init() {
       loadSettings();
+      // URL に ?worker=... があれば Worker エンドポイントを取り込み保存する（ワンクリック設定用）
+      const qsWorker = new URLSearchParams(location.search).get("worker");
+      if (qsWorker) {
+        const clean = qsWorker.trim().replace(/\/+$/, "");
+        $("workerUrl").value = clean;
+        localStorage.setItem(LS.url, clean);
+        setStatus("Worker エンドポイントを URL から設定しました。APIキーを入力してください。", "ok");
+      }
       $("saveSettings").addEventListener("click", saveSettings);
       $("clearSettings").addEventListener("click", clearSettings);
       $("runBtn").addEventListener("click", run);
