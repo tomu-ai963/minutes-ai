@@ -108,6 +108,53 @@
       border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* アクションアイテム */
+    .table-wrap { overflow-x: auto; }
+    table.action-items {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .9rem;
+    }
+    table.action-items th, table.action-items td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    table.action-items th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: .8rem;
+      white-space: nowrap;
+    }
+    table.action-items td.task { word-break: break-word; }
+    .assignee-unset { color: var(--muted); }
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: .78rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge.high { background: rgba(239,68,68,.18); color: #fca5a5; border: 1px solid rgba(239,68,68,.4); }
+    .badge.medium { background: rgba(234,179,8,.16); color: #fde047; border: 1px solid rgba(234,179,8,.4); }
+    .badge.low { background: rgba(34,197,94,.16); color: #86efac; border: 1px solid rgba(34,197,94,.4); }
+    .empty-note { color: var(--muted); font-size: .9rem; }
+
+    /* 連携設定 */
+    .integration { margin: 18px 0 4px; padding-top: 14px; border-top: 1px solid var(--border); }
+    .integration-head { color: var(--muted); font-size: .85rem; margin-bottom: 8px; }
+    label.check {
+      display: flex; align-items: center; gap: 8px;
+      color: var(--text); font-size: .95rem; margin-bottom: 10px; cursor: pointer;
+    }
+    label.check input { width: auto; margin: 0; }
+    .integration-fields { display: none; }
+    .integration-fields code {
+      background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: .85em;
+    }
   </style>
 </head>
 <body>
@@ -145,6 +192,30 @@
           </select>
         </div>
       </div>
+      <!-- Notion 連携 -->
+      <div class="integration">
+        <div class="integration-head">— Notion連携 —</div>
+        <label class="check"><input type="checkbox" id="notionEnabled" /> Notionに保存する</label>
+        <div id="notionFields" class="integration-fields">
+          <label for="notionToken">Notion インテグレーション Token</label>
+          <input id="notionToken" type="password" placeholder="secret_xxx" autocomplete="off" />
+          <label for="notionDbId">Notion データベース ID</label>
+          <input id="notionDbId" type="text" placeholder="32桁の英数字" autocomplete="off" />
+          <p class="hint">NotionでDBを開き、URLの <code>?v=</code> の手前にある32桁のIDです。</p>
+        </div>
+      </div>
+
+      <!-- Slack 連携 -->
+      <div class="integration">
+        <div class="integration-head">— Slack連携 —</div>
+        <label class="check"><input type="checkbox" id="slackEnabled" /> Slackに通知する</label>
+        <div id="slackFields" class="integration-fields">
+          <label for="slackWebhook">Slack Incoming Webhook URL</label>
+          <input id="slackWebhook" type="password" placeholder="https://hooks.slack.com/services/..." autocomplete="off" />
+          <p class="hint">Slack App 設定の Incoming Webhooks から取得できます。</p>
+        </div>
+      </div>
+
       <div class="actions">
         <button id="saveSettings">設定を保存</button>
         <button id="clearSettings" class="secondary">保存した設定を消去</button>
@@ -173,12 +244,22 @@
       <div class="actions" style="margin-bottom:14px">
         <button id="copyBtn" class="secondary">コピー</button>
         <button id="downloadBtn" class="secondary">Markdown をダウンロード</button>
+        <button id="sendBtn" disabled>📤 Notion &amp; Slackに送る</button>
       </div>
       <pre class="output" id="output"></pre>
       <details>
         <summary>文字起こし全文を表示</summary>
         <pre class="output" id="transcript" style="margin-top:10px"></pre>
       </details>
+    </section>
+
+    <!-- アクションアイテム -->
+    <section class="card output-wrap" id="actionItemsWrap">
+      <h2>✅ アクションアイテム</h2>
+      <div class="actions" style="margin-bottom:14px">
+        <button id="csvBtn" class="secondary">📥 CSVダウンロード</button>
+      </div>
+      <div id="actionItemsBody"></div>
     </section>
   </main>
 
@@ -190,10 +271,19 @@
       openai: "minutesai_openai_key",
       anthropic: "minutesai_anthropic_key",
       lang: "minutesai_language",
+      notionEnabled: "minutesai_notion_enabled",
+      notionToken: "minutesai_notion_token",
+      notionDbId: "minutesai_notion_db_id",
+      slackEnabled: "minutesai_slack_enabled",
+      slackWebhook: "minutesai_slack_webhook",
     };
     const ALLOWED_EXT = ["mp3", "mp4", "wav", "m4a"];
     const MAX_SIZE = 25 * 1024 * 1024;
     let selectedFile = null;
+    // 直近に生成されたアクションアイテム（/minutes レスポンスから自動セット）
+    let currentActionItems = [];
+    let minutesGenerated = false;
+    const PRIORITY_LABEL = { high: "高", medium: "中", low: "低" };
 
     /* ---- 設定の読み書き（localStorage） ---- */
     function loadSettings() {
@@ -201,18 +291,38 @@
       $("openaiKey").value = localStorage.getItem(LS.openai) || "";
       $("anthropicKey").value = localStorage.getItem(LS.anthropic) || "";
       $("language").value = localStorage.getItem(LS.lang) || "";
+      // 連携設定
+      $("notionEnabled").checked = localStorage.getItem(LS.notionEnabled) === "1";
+      $("notionToken").value = localStorage.getItem(LS.notionToken) || "";
+      $("notionDbId").value = localStorage.getItem(LS.notionDbId) || "";
+      $("slackEnabled").checked = localStorage.getItem(LS.slackEnabled) === "1";
+      $("slackWebhook").value = localStorage.getItem(LS.slackWebhook) || "";
+      syncIntegrationFields();
+      updateSendButton();
     }
     function saveSettings() {
       localStorage.setItem(LS.url, $("workerUrl").value.trim().replace(/\/+$/, ""));
       localStorage.setItem(LS.openai, $("openaiKey").value.trim());
       localStorage.setItem(LS.anthropic, $("anthropicKey").value.trim());
       localStorage.setItem(LS.lang, $("language").value);
+      localStorage.setItem(LS.notionEnabled, $("notionEnabled").checked ? "1" : "0");
+      localStorage.setItem(LS.notionToken, $("notionToken").value.trim());
+      localStorage.setItem(LS.notionDbId, $("notionDbId").value.trim());
+      localStorage.setItem(LS.slackEnabled, $("slackEnabled").checked ? "1" : "0");
+      localStorage.setItem(LS.slackWebhook, $("slackWebhook").value.trim());
+      updateSendButton();
       setStatus("設定を保存しました。", "ok");
     }
     function clearSettings() {
       Object.values(LS).forEach((k) => localStorage.removeItem(k));
       loadSettings();
       setStatus("保存した設定を消去しました。", "ok");
+    }
+
+    /* ---- 連携設定のフィールド表示切り替え ---- */
+    function syncIntegrationFields() {
+      $("notionFields").style.display = $("notionEnabled").checked ? "block" : "none";
+      $("slackFields").style.display = $("slackEnabled").checked ? "block" : "none";
     }
 
     /* ---- ステータス表示 ---- */
@@ -275,12 +385,194 @@
         $("output").textContent = data.minutes || "";
         $("transcript").textContent = data.transcript || "";
         $("outputWrap").style.display = "block";
+        // アクションアイテムを保持・表示する
+        currentActionItems = Array.isArray(data.action_items) ? data.action_items : [];
+        renderActionItems(currentActionItems);
+        minutesGenerated = true;
+        updateSendButton();
         setStatus("議事録を生成しました。", "ok");
         $("outputWrap").scrollIntoView({ behavior: "smooth" });
       } catch (e) {
         setStatus("通信に失敗しました。Worker の URL と CORS 設定をご確認ください。", "err");
       } finally {
         $("runBtn").disabled = false;
+      }
+    }
+
+    /* ---- アクションアイテム表示 ---- */
+    function escapeHtml(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+    function renderActionItems(items) {
+      $("actionItemsWrap").style.display = "block";
+      const body = $("actionItemsBody");
+      if (!Array.isArray(items) || items.length === 0) {
+        body.innerHTML = '<p class="empty-note">アクションアイテムはありませんでした。</p>';
+        return;
+      }
+      const rows = items.map((it) => {
+        const prio = ["high", "medium", "low"].includes(it.priority) ? it.priority : "medium";
+        const prioLabel = PRIORITY_LABEL[prio] || "中";
+        const isUnset = !it.assignee || it.assignee === "未定";
+        const assigneeCell = isUnset
+          ? '<span class="assignee-unset">未定</span>'
+          : escapeHtml(it.assignee);
+        const due = it.due_label || (it.due ? escapeHtml(it.due) : "期限未定");
+        return `<tr>
+          <td><span class="badge ${prio}">${prioLabel}</span></td>
+          <td>${assigneeCell}</td>
+          <td class="task">${escapeHtml(it.task)}</td>
+          <td>${escapeHtml(due)}</td>
+        </tr>`;
+      }).join("");
+      body.innerHTML = `<div class="table-wrap">
+        <table class="action-items">
+          <thead>
+            <tr><th>優先度</th><th>担当者</th><th>タスク</th><th>期限</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    }
+
+    /* ---- CSV ダウンロード（BOM付き UTF-8・Excel 日本語対応） ---- */
+    function csvEscape(value) {
+      const s = String(value == null ? "" : value);
+      // ダブルクォート・カンマ・改行を含む場合はクォートで囲む
+      if (/[",\r\n]/.test(s)) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    }
+    function downloadCsv() {
+      if (!currentActionItems.length) {
+        setStatus("ダウンロードできるアクションアイテムがありません。", "err");
+        return;
+      }
+      const header = ["No", "担当者", "タスク", "期限", "優先度"];
+      const lines = [header.map(csvEscape).join(",")];
+      currentActionItems.forEach((it, i) => {
+        const due = it.due_label || it.due || "期限未定";
+        const prioLabel = PRIORITY_LABEL[it.priority] || it.priority || "中";
+        lines.push([
+          csvEscape(it.id != null ? it.id : i + 1),
+          csvEscape(it.assignee || "未定"),
+          csvEscape(it.task || ""),
+          csvEscape(due),
+          csvEscape(prioLabel),
+        ].join(","));
+      });
+      // CRLF 改行 + 先頭 BOM(﻿) で Excel との互換性を高める
+      const csv = "﻿" + lines.join("\r\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const d = new Date();
+      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `action-items-${stamp}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    /* ---- Notion / Slack 連携 ---- */
+    // 送信ボタンの表示/有効状態を更新する。
+    // 両方OFF → 非表示。少なくとも一方ON かつ議事録生成済み → 有効。
+    function updateSendButton() {
+      const notionOn = $("notionEnabled").checked;
+      const slackOn = $("slackEnabled").checked;
+      const btn = $("sendBtn");
+      if (!notionOn && !slackOn) {
+        btn.style.display = "none";
+        return;
+      }
+      btn.style.display = "";
+      btn.disabled = !minutesGenerated;
+    }
+
+    // 議事録の先頭の見出し行（# ...）からタイトルを抽出。無ければ日付ベースで生成。
+    function deriveTitle() {
+      const md = $("output").textContent || "";
+      const m = md.match(/^#\s+(.+)$/m);
+      if (m && m[1].trim()) return m[1].trim();
+      const d = new Date();
+      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      return `議事録_${stamp}`;
+    }
+
+    async function sendToIntegrations() {
+      const url = localStorage.getItem(LS.url) || $("workerUrl").value.trim().replace(/\/+$/, "");
+      if (!url) { setStatus("Worker エンドポイント URL を入力してください。", "err"); return; }
+
+      const notionEnabled = $("notionEnabled").checked;
+      const slackEnabled = $("slackEnabled").checked;
+      if (!notionEnabled && !slackEnabled) {
+        setStatus("Notion・Slack のいずれかを有効にしてください。", "err");
+        return;
+      }
+
+      const payload = {
+        minutes: $("output").textContent || "",
+        action_items: currentActionItems,
+        title: deriveTitle(),
+        notion: {
+          enabled: notionEnabled,
+          token: $("notionToken").value.trim(),
+          database_id: $("notionDbId").value.trim(),
+        },
+        slack: {
+          enabled: slackEnabled,
+          webhook_url: $("slackWebhook").value.trim(),
+        },
+      };
+
+      $("sendBtn").disabled = true;
+      setStatus("Notion / Slack に送信しています…", "work", true);
+
+      try {
+        const resp = await fetch(url + "/notify", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          setStatus(data.error || `エラーが発生しました（${resp.status}）。`, "err");
+          return;
+        }
+
+        // 結果メッセージを組み立てる
+        const parts = [];
+        let anyFail = false;
+        if (notionEnabled) {
+          if (data.notion_ok) {
+            parts.push(data.notion_page_url
+              ? `✅ <a href="${escapeHtml(data.notion_page_url)}" target="_blank" rel="noopener">Notionページを開く</a>`
+              : "✅ Notionに保存しました");
+          } else {
+            anyFail = true;
+            parts.push(`⚠️ Notion保存失敗: ${escapeHtml(data.notion_error || "不明なエラー")}`);
+          }
+        }
+        if (slackEnabled) {
+          if (data.slack_ok) {
+            parts.push("Slackに通知しました");
+          } else {
+            anyFail = true;
+            parts.push(`⚠️ Slack通知失敗: ${escapeHtml(data.slack_error || "不明なエラー")}`);
+          }
+        }
+
+        const el = $("status");
+        el.className = anyFail ? "err" : "ok";
+        el.innerHTML = parts.join(" / ");
+      } catch (e) {
+        setStatus("通信に失敗しました。Worker の URL と CORS 設定をご確認ください。", "err");
+      } finally {
+        updateSendButton();
       }
     }
 
@@ -321,6 +613,11 @@
       $("runBtn").addEventListener("click", run);
       $("copyBtn").addEventListener("click", copyOutput);
       $("downloadBtn").addEventListener("click", downloadOutput);
+      $("csvBtn").addEventListener("click", downloadCsv);
+      $("sendBtn").addEventListener("click", sendToIntegrations);
+      // 連携チェックボックス：フィールド表示と送信ボタン状態を更新
+      $("notionEnabled").addEventListener("change", () => { syncIntegrationFields(); updateSendButton(); });
+      $("slackEnabled").addEventListener("change", () => { syncIntegrationFields(); updateSendButton(); });
 
       const dz = $("dropzone");
       dz.addEventListener("click", () => $("fileInput").click());
