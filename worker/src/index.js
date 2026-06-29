@@ -17,7 +17,9 @@
  * エンドポイント:
  *   POST /transcribe  音声ファイル(multipart/form-data) → 文字起こしテキスト
  *   POST /generate    文字起こしテキスト(JSON) → Markdown 議事録
- *   POST /minutes     /transcribe + /generate を一括実行
+ *   POST /minutes     /transcribe + /generate を一括実行（action_items 付き）
+ *   POST /extract     文字起こし/議事録(JSON) → アクションアイテム JSON 配列
+ *   POST /notify      議事録＋アクションアイテムを Notion 保存／Slack 通知
  *   POST /save        議事録を D1 に保存（D1 未設定なら 501）
  *   GET  /minutes/:id 保存済み議事録の取得（D1 未設定なら 501）
  *   GET  /health      ヘルスチェック
@@ -58,6 +60,14 @@ export default {
 
       if (request.method === "POST" && path === "/minutes") {
         return await handleMinutes(request, origin);
+      }
+
+      if (request.method === "POST" && path === "/extract") {
+        return await handleExtract(request, origin);
+      }
+
+      if (request.method === "POST" && path === "/notify") {
+        return await handleNotify(request, origin);
       }
 
       if (request.method === "POST" && path === "/save") {
@@ -166,7 +176,100 @@ async function handleMinutes(request, origin) {
   const result = await callClaude(transcript.text, anthropicKey, form.get("model"), origin);
   if (result.error) return json({ error: result.error }, result.status, origin);
 
-  return json({ transcript: transcript.text, minutes: result.markdown }, 200, origin);
+  // 議事録生成のあとに、同じ文字起こしからアクションアイテムを順次抽出する。
+  // 抽出に失敗しても議事録本体は返したいので、エラー時は空配列にフォールバックする。
+  const extracted = await callClaudeActionItems(transcript.text, anthropicKey, form.get("model"));
+
+  return json(
+    {
+      transcript: transcript.text,
+      minutes: result.markdown,
+      action_items: extracted.action_items || [],
+    },
+    200,
+    origin
+  );
+}
+
+// 文字起こし or 議事録テキストから、アクションアイテムを構造化抽出する
+async function handleExtract(request, origin) {
+  const anthropicKey = getHeaderKey(request, "x-anthropic-key");
+  if (!anthropicKey) {
+    return json({ error: "Anthropic APIキーが指定されていません。設定画面でキーを入力してください。" }, 401, origin);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "リクエスト形式が不正です。JSON で送信してください。" }, 400, origin);
+  }
+
+  // transcript を優先し、無ければ minutes（議事録 Markdown）を使う
+  const text = ((body.transcript || body.minutes) || "").trim();
+  if (!text) {
+    return json({ error: "抽出対象のテキストが空です。transcript または minutes を指定してください。" }, 400, origin);
+  }
+
+  const extracted = await callClaudeActionItems(text, anthropicKey, body.model);
+  if (extracted.error) return json({ error: extracted.error }, extracted.status, origin);
+
+  // JSON パースに失敗した場合でも、生レスポンスを添えつつ action_items は空配列で返す
+  if (extracted.parseError) {
+    return json({ action_items: [], raw: extracted.raw }, 200, origin);
+  }
+
+  return json({ action_items: extracted.action_items }, 200, origin);
+}
+
+// 議事録＋アクションアイテムを Notion へ保存し、Slack へ通知する。
+// トークン・Webhook URL はリクエストボディで受け取り、Worker には保存しない（BYOK）。
+async function handleNotify(request, origin) {
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "リクエスト形式が不正です。JSON で送信してください。" }, 400, origin);
+  }
+
+  const minutes = (body.minutes || "").trim();
+  const actionItems = Array.isArray(body.action_items) ? body.action_items : [];
+  const title = (body.title || "").trim() || "議事録";
+  const notion = body.notion || {};
+  const slack = body.slack || {};
+
+  if (!minutes && actionItems.length === 0) {
+    return json({ error: "送信する議事録またはアクションアイテムがありません。" }, 400, origin);
+  }
+  if (!notion.enabled && !slack.enabled) {
+    return json({ error: "Notion・Slack のいずれも有効になっていません。設定をご確認ください。" }, 400, origin);
+  }
+
+  const result = {};
+
+  // 1) Notion へページ作成
+  if (notion.enabled) {
+    if (!notion.token || !notion.database_id) {
+      result.notion_ok = false;
+      result.notion_error = "Notion の Token またはデータベース ID が未設定です。";
+    } else {
+      const r = await callNotionCreatePage(notion.token, notion.database_id, title, minutes, actionItems);
+      Object.assign(result, r);
+    }
+  }
+
+  // 2) Slack へ通知（Notion の成否に関わらず継続）
+  if (slack.enabled) {
+    if (!slack.webhook_url) {
+      result.slack_ok = false;
+      result.slack_error = "Slack の Webhook URL が未設定です。";
+    } else {
+      const r = await callSlackWebhook(slack.webhook_url, title, actionItems);
+      Object.assign(result, r);
+    }
+  }
+
+  return json(result, 200, origin);
 }
 
 async function handleSave(request, env, origin) {
@@ -286,6 +389,272 @@ async function callClaude(transcript, anthropicKey, model, origin) {
     return { error: "議事録の生成結果が空でした。もう一度お試しください。", status: 502 };
   }
   return { markdown };
+}
+
+// テキストからアクションアイテムを抽出し、JSON 配列にパースして返す。
+// 戻り値: { action_items } / { error, status } / { parseError: true, raw, action_items: [] }
+async function callClaudeActionItems(text, anthropicKey, model) {
+  const prompt = buildActionItemsPrompt(text);
+
+  let resp;
+  try {
+    resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": anthropicKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+      },
+      body: JSON.stringify({
+        model: model || CLAUDE_MODEL,
+        max_tokens: 4096,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+  } catch (e) {
+    return { error: "アクションアイテム抽出APIへの接続に失敗しました。時間をおいて再度お試しください。", status: 502 };
+  }
+
+  if (!resp.ok) {
+    const msg = await safeErrorMessage(resp);
+    if (resp.status === 401) {
+      return { error: "Anthropic APIキーが無効です。キーを確認してください。", status: 401 };
+    }
+    if (resp.status === 429) {
+      return { error: "Anthropic APIのレート制限です。時間をおいて再度お試しください。", status: 429 };
+    }
+    return { error: `アクションアイテムの抽出に失敗しました（${resp.status}）: ${msg}`, status: 502 };
+  }
+
+  const data = await resp.json();
+  const rawText = (data.content || [])
+    .filter((c) => c.type === "text")
+    .map((c) => c.text)
+    .join("\n")
+    .trim();
+
+  const parsed = parseActionItems(rawText);
+  if (!parsed) {
+    // パース失敗：生レスポンスを添えつつ空配列で返す
+    return { parseError: true, raw: rawText, action_items: [] };
+  }
+  return { action_items: parsed };
+}
+
+// Claude の出力（理想は純粋な JSON 配列）を堅牢にパースする。
+// Markdown コードフェンス等が混じっても、最初の配列部分を抜き出して試みる。
+function parseActionItems(rawText) {
+  if (!rawText) return [];
+  const candidates = [];
+  candidates.push(rawText);
+
+  // ```json ... ``` のようなコードフェンスを除去
+  const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) candidates.push(fenceMatch[1].trim());
+
+  // 最初の "[" から最後の "]" までを配列候補として抽出
+  const start = rawText.indexOf("[");
+  const end = rawText.lastIndexOf("]");
+  if (start !== -1 && end !== -1 && end > start) {
+    candidates.push(rawText.slice(start, end + 1));
+  }
+
+  for (const c of candidates) {
+    try {
+      const v = JSON.parse(c);
+      if (Array.isArray(v)) return v;
+    } catch {
+      // 次の候補を試す
+    }
+  }
+  return null;
+}
+
+function buildActionItemsPrompt(text) {
+  return `以下のテキストからアクションアイテムを抽出し、必ずJSON配列のみで返してください。
+前置き・解説・Markdownコードブロックは一切含めないこと。
+出力フォーマット（JSON配列）:
+[
+{
+"id": 1,
+"assignee": "田中さん",      // 担当者（不明な場合は"未定"）
+"task": "議事録を共有する",   // タスク内容
+"due": "2024-07-05",        // 期限（ISO形式。不明な場合はnull）
+"due_label": "7月5日まで",   // 期限の表示用文字列（不明な場合は"期限未定"）
+"priority": "high"          // high / medium / low（文脈から推定）
+}
+]
+テキスト:
+"""
+${text}
+"""`;
+}
+
+/* ----------------------------- Notion / Slack ----------------------------- */
+
+const NOTION_VERSION = "2022-06-28";
+const NOTION_BLOCK_LIMIT = 2000; // paragraph の rich_text 1 ブロックあたりの文字上限
+
+// 議事録本文＋アクションアイテムを Notion データベースにページとして作成する。
+// 戻り値: { notion_ok: true, notion_page_url } または { notion_ok: false, notion_error }
+async function callNotionCreatePage(token, databaseId, title, minutes, actionItems) {
+  const children = buildNotionChildren(minutes, actionItems);
+
+  // タイトルプロパティ名は DB により "Name" / "タイトル" などと異なる。
+  // MVP では "タイトル" → "Name" の順にフォールバックして試行する。
+  const titlePropNames = ["タイトル", "Name"];
+  let lastError = "詳細不明";
+
+  for (const propName of titlePropNames) {
+    const payload = {
+      parent: { database_id: databaseId },
+      properties: {
+        [propName]: {
+          title: [{ text: { content: title.slice(0, NOTION_BLOCK_LIMIT) } }],
+        },
+      },
+      children,
+    };
+
+    let resp;
+    try {
+      resp = await fetch("https://api.notion.com/v1/pages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+          "Notion-Version": NOTION_VERSION,
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      return { notion_ok: false, notion_error: "Notion API への接続に失敗しました。時間をおいて再度お試しください。" };
+    }
+
+    if (resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      return { notion_ok: true, notion_page_url: data.url || "" };
+    }
+
+    const msg = await safeErrorMessage(resp);
+    lastError = msg;
+    if (resp.status === 401) {
+      return { notion_ok: false, notion_error: "Notion のトークンが無効です。インテグレーション設定をご確認ください。" };
+    }
+    // プロパティ名不一致（400: validation_error 等）の場合は次の候補名で再試行する。
+    // それ以外（404 など）は再試行しても無駄なので即返す。
+    if (resp.status !== 400) {
+      return { notion_ok: false, notion_error: `Notion への保存に失敗しました（${resp.status}）: ${msg}` };
+    }
+  }
+
+  return {
+    notion_ok: false,
+    notion_error: `Notion への保存に失敗しました。データベースのタイトルプロパティ名（"タイトル" / "Name"）と共有設定をご確認ください: ${lastError}`,
+  };
+}
+
+// 議事録本文を paragraph ブロック（2000 文字ごとに分割）に、
+// アクションアイテムを heading_2 ＋ bulleted_list_item に変換する。
+function buildNotionChildren(minutes, actionItems) {
+  const children = [];
+
+  if (minutes) {
+    for (const chunk of splitText(minutes, NOTION_BLOCK_LIMIT)) {
+      children.push({
+        object: "block",
+        type: "paragraph",
+        paragraph: {
+          rich_text: [{ type: "text", text: { content: chunk } }],
+        },
+      });
+    }
+  }
+
+  children.push({
+    object: "block",
+    type: "heading_2",
+    heading_2: {
+      rich_text: [{ type: "text", text: { content: "✅ アクションアイテム" } }],
+    },
+  });
+
+  if (actionItems.length === 0) {
+    children.push({
+      object: "block",
+      type: "paragraph",
+      paragraph: {
+        rich_text: [{ type: "text", text: { content: "アクションアイテムはありませんでした。" } }],
+      },
+    });
+  } else {
+    for (const it of actionItems) {
+      children.push({
+        object: "block",
+        type: "bulleted_list_item",
+        bulleted_list_item: {
+          rich_text: [{ type: "text", text: { content: formatActionItemLine(it).slice(0, NOTION_BLOCK_LIMIT) } }],
+        },
+      });
+    }
+  }
+
+  // Notion API は 1 リクエストあたり children 100 ブロックまで
+  return children.slice(0, 100);
+}
+
+// `[priority] assignee：task（due_label）` 形式の 1 行文字列を組み立てる
+function formatActionItemLine(it) {
+  const priority = it.priority || "medium";
+  const assignee = it.assignee || "未定";
+  const task = it.task || "";
+  const dueLabel = it.due_label || "期限未定";
+  return `[${priority}] ${assignee}：${task}（${dueLabel}）`;
+}
+
+// 文字列を maxLen ごとに分割する（空文字なら空配列）
+function splitText(text, maxLen) {
+  const out = [];
+  for (let i = 0; i < text.length; i += maxLen) {
+    out.push(text.slice(i, i + maxLen));
+  }
+  return out;
+}
+
+// Slack Incoming Webhook へシンプルな text 形式で通知する。
+// 戻り値: { slack_ok: true } または { slack_ok: false, slack_error }
+async function callSlackWebhook(webhookUrl, title, actionItems) {
+  const lines = [];
+  lines.push("📝 議事録が生成されました");
+  if (title) lines.push(title);
+  lines.push(`✅ アクションアイテム（${actionItems.length}件）`);
+  lines.push("");
+  if (actionItems.length === 0) {
+    lines.push("アクションアイテムはありませんでした。");
+  } else {
+    for (const it of actionItems) {
+      lines.push(formatActionItemLine(it));
+    }
+  }
+  lines.push("");
+  lines.push("minutes-ai により自動生成");
+
+  let resp;
+  try {
+    resp = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: lines.join("\n") }),
+    });
+  } catch (e) {
+    return { slack_ok: false, slack_error: "Slack への接続に失敗しました。Webhook URL をご確認ください。" };
+  }
+
+  if (!resp.ok) {
+    const msg = await safeErrorMessage(resp);
+    return { slack_ok: false, slack_error: `Slack への通知に失敗しました（${resp.status}）: ${msg}` };
+  }
+  return { slack_ok: true };
 }
 
 function buildMinutesPrompt(transcript) {

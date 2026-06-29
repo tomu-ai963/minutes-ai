@@ -37,3 +37,17 @@
 ## デプロイ
 - Worker：`cd worker && wrangler deploy`
 - Frontend：`frontend/index.html` を GitHub Pages で公開し、画面上の「Worker エンドポイント URL」にデプロイ済み Worker の URL を設定する。
+
+## v2 追加機能（2026-06-30）
+- `POST /extract`：アクションアイテムのJSON抽出エンドポイント（`buildActionItemsPrompt()` を使用。`transcript` または `minutes` を受け取る）。
+- `POST /minutes` レスポンスに `action_items` フィールドを追加（議事録生成後に同じ文字起こしから順次抽出）。
+- フロントエンドにアクションアイテムテーブル＋CSVダウンロード機能を追加（優先度バッジ：high=赤 / medium=黄 / low=緑）。
+- CSVはBOM付きUTF-8（Excelで直接開けるよう対応）。カラム：`No,担当者,タスク,期限,優先度`。
+
+## v3 追加機能（2026-06-30）
+- `POST /notify`：Notion保存＋Slack通知エンドポイント。
+  - `notion.enabled=true` → Notion API（`/v1/pages`, `Notion-Version: 2022-06-28`）でページ作成（議事録本文を paragraph に2000文字ごと分割＋アクションアイテムを heading_2「✅ アクションアイテム」＋ bulleted_list_item）。タイトルプロパティ名は「タイトル」→「Name」のフォールバック。
+  - `slack.enabled=true` → Incoming Webhook にシンプルな text 形式で通知。
+  - トークン・Webhook URL はリクエストボディで受け取り、サーバーには保存しない（BYOK）。Notion 失敗時も Slack は継続。
+- フロントエンド設定画面に Notion / Slack 連携の ON/OFF 設定（チェックでフィールド表示）を追加。
+- 議事録生成後に「📤 Notion & Slackに送る」ボタンで手動送信。Notionページ作成時は `notion_page_url` をリンク表示。
