@@ -137,3 +137,23 @@ D1 を設定しない場合でも、文字起こし・議事録生成は問題�
 ## セキュリティ / プライバシー
 - API キーはブラウザの localStorage に保存され、API 呼び出し時にヘッダーで Worker に渡されます。Worker はそれを外部 API 呼び出しに使うだけで保存しません。
 - 共有端末では使用後に「保存した設定を消去」を実行してください。
+
+### SSRF 対策（`/notify` の Webhook）
+`/notify` の Slack Webhook URL はユーザー指定のため、外部送信前に宛先を検証しています（`worker/src/lib/url-guard.js`）:
+- 内部・予約帯域（`10/8`・`172.16/12`・`192.168/16`・`127/8`・`169.254/16`・`fc00::/7`・`fe80::/10`・マルチキャスト等）宛を拒否
+- 難読化 IP 表記（10進/16進/8進/inet_aton、IPv4-mapped/6to4/NAT64 の IPv6 埋め込み v4）を正規化して判定
+- リダイレクトは手動追従し、追従先ごとに再検証。レスポンスサイズ上限（1MB）とタイムアウト（5s）を適用
+- **残余リスク**: Workers ランタイムには同期 DNS 解決 API が無いため、ホスト名は DNS-over-HTTPS で解決してから検証します。fetch 実体の解決結果と検証時の解決結果がずれうる（DNS リバインディング / TOCTOU）残余リスクは完全には排除できません。より厳格にしたい場合は Slack Webhook のホストを `hooks.slack.com` に固定する運用も可能です。
+
+### レート制限
+全エンドポイントにスライディングウィンドウ方式のレート制限を適用しています（`worker/src/lib/ratelimit.js`）。テナント（API キーのハッシュ）単位・IP 単位で個別に評価し、文字起こし・AI 呼び出し・外部送信など高コストな経路を優先的に制限します。超過時は `429`（`Retry-After` 付き）を返します。
+- 既定は Durable Object 未バインド時のメモリ版フォールバック（isolate ローカル・ベストエフォート）。
+- 本番で厳密なグローバル制限が必要な場合は `wrangler.toml` の `RATE_LIMITER` Durable Object バインドを有効化してください。
+
+### 開発（テスト / 型チェック）
+```bash
+cd worker
+npm install
+npm test        # vitest（url-guard / ratelimit / worker E2E）
+npm run typecheck  # tsc --checkJs
+```
