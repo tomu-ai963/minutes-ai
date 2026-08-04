@@ -4,17 +4,20 @@
  * ユーザー指定の Webhook URL（`/notify` の Slack Webhook 等）を外部送信する前に、
  * 宛先が内部ネットワーク・予約帯域でないことを検証する。
  *
- * 設計方針（knowledge-rag の `lib/url-guard.ts` を JS 版として踏襲）:
+ * 設計方針（deflect の `worker/src/lib/url-guard.ts` と同じ fail-closed 方針）:
  *   - fail-closed：判定に迷う入力（パース不能・解決不能）は全て拒否する。
+ *   - ホスト名は必ず DNS-over-HTTPS で解決し、全 A/AAAA レコードを検査する。
+ *     解決をスキップする経路は持たない。次はすべて拒否：解決不能 / レコード0件 /
+ *     IP として解釈できない解決結果 / A・AAAA の片方しか確定的に引けなかった場合。
  *   - 難読化 IP 表記（10 進 / 16 進 / 8 進 / inet_aton、IPv4-mapped/compat IPv6、
  *     NAT64、6to4、fc00::/7 等）を正規化してから判定する。
  *   - リダイレクトは手動追従（redirect: 'manual'）し、追従先ごとに再検証する。
- *   - レスポンスサイズ上限・タイムアウトを設定する。
+ *   - レスポンスサイズ上限・タイムアウト（DNS 解決・本体取得の両方）を設定する。
  *
  * 残余リスク（README にも記載）:
- *   Cloudflare Workers ランタイムには同期的な DNS 解決 API が無いため、ホスト名は
- *   DNS-over-HTTPS で解決してから検証する。fetch 実体が使う解決結果と検証時の解決結果が
- *   異なりうる（DNS リバインディング / TOCTOU）残余リスクは完全には排除できない。
+ *   検証時の DNS 解決結果と、`fetch` 実体が使う解決結果が異なりうる
+ *   （DNS リバインディング / TOCTOU）残余リスクは完全には排除できない。
+ *   Workers ランタイムでは検証済み IP への接続を強制できないため、この窓は塞げない。
  *   テストでは `resolve` を注入して決定的に検証する。
  */
 
@@ -216,38 +219,66 @@ export function isBlockedIp(ip) {
 
 /* ----------------------------- DNS 解決 ----------------------------- */
 
+export const DNS_TIMEOUT_MS = 5000;
+
 // DNS-over-HTTPS でホスト名を解決する（本番既定のリゾルバ）。
-/** @param {string} hostname @returns {Promise<string[]>} */
-async function dohResolve(hostname) {
+// A / AAAA の両方を「確定的に」引けなかった場合は throw し、呼び出し側で拒否させる。
+// 片方だけ引けた状態で合格判定すると、引けなかった側のレコードが内部アドレスでも
+// 素通りしてしまうため、部分的な解決結果は信用しない。
+/** @param {string} hostname @param {number} timeoutMs @returns {Promise<string[]>} */
+async function dohResolve(hostname, timeoutMs) {
   const out = [];
+  let definitive = 0;
   for (const type of ["A", "AAAA"]) {
     const u = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=${type}`;
-    let r;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      r = await fetch(u, { headers: { accept: "application/dns-json" } });
+      const r = await fetch(u, {
+        headers: { accept: "application/dns-json" },
+        signal: controller.signal,
+      });
+      if (!r.ok) continue;
+      const j = await r.json().catch(() => null);
+      if (!j || typeof j.Status !== "number") continue;
+      // Status 0=NOERROR / 3=NXDOMAIN のみ「引けた」とみなす。
+      // SERVFAIL(2) 等は解決失敗であって「レコードが無い」ではない。
+      if (j.Status !== 0 && j.Status !== 3) continue;
+      definitive++;
+      if (!Array.isArray(j.Answer)) continue;
+      for (const ans of j.Answer) {
+        // 1 = A, 28 = AAAA。CNAME(5) 等は最終的な A/AAAA が同じ応答に含まれる。
+        if (ans.type === 1 || ans.type === 28) out.push(String(ans.data));
+      }
     } catch {
       continue;
-    }
-    if (!r.ok) continue;
-    const j = await r.json().catch(() => null);
-    if (!j || !Array.isArray(j.Answer)) continue;
-    for (const ans of j.Answer) {
-      if (ans.type === 1 || ans.type === 28) out.push(String(ans.data));
+    } finally {
+      clearTimeout(timer);
     }
   }
+  if (definitive < 2) throw new SsrfError(`DNS 解決に失敗しました: ${hostname}`);
   return out;
 }
 
-const BLOCKED_HOSTNAMES = new Set(["localhost"]);
+// 名前だけで弾く危険ホスト（DNS 解決前に判定する）。
+const BLOCKED_HOSTNAMES = new Set(["localhost", "ip6-localhost", "ip6-loopback"]);
+const BLOCKED_SUFFIXES = [".localhost", ".local", ".internal"];
+
+/** @param {string} host 末尾ドットを落とした小文字ホスト名 */
+function isBlockedHostname(host) {
+  if (BLOCKED_HOSTNAMES.has(host)) return true;
+  return BLOCKED_SUFFIXES.some((s) => host.endsWith(s));
+}
 
 /**
  * URL が外部送信して安全な公開宛先か検証する。危険なら SsrfError を投げる。
  * @param {string} rawUrl
- * @param {{ resolve?: (h: string) => Promise<string[]> }} [opts]
+ * @param {{ resolve?: (h: string) => Promise<string[]>, timeoutMs?: number }} [opts]
  * @returns {Promise<URL>}
  */
 export async function assertPublicUrl(rawUrl, opts = {}) {
-  const resolve = opts.resolve || dohResolve;
+  const timeoutMs = opts.timeoutMs ?? DNS_TIMEOUT_MS;
+  const resolve = opts.resolve || ((h) => dohResolve(h, timeoutMs));
 
   let u;
   try {
@@ -263,8 +294,9 @@ export async function assertPublicUrl(rawUrl, opts = {}) {
     throw new SsrfError("認証情報を含む URL は許可されていません。");
   }
 
-  const host = u.hostname.replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
-  if (BLOCKED_HOSTNAMES.has(host) || host.endsWith(".localhost")) {
+  // 末尾ドット（FQDN 表記 "localhost."）でブロックリストを迂回されないよう正規化する。
+  const host = u.hostname.replace(/^\[/, "").replace(/\]$/, "").toLowerCase().replace(/\.$/, "");
+  if (isBlockedHostname(host)) {
     throw new SsrfError("内部ホスト宛の URL は許可されていません。");
   }
 
@@ -278,7 +310,13 @@ export async function assertPublicUrl(rawUrl, opts = {}) {
   }
 
   // FQDN は解決して全 A/AAAA レコードを検証（fail-closed）
-  const addrs = await resolve(host);
+  let addrs;
+  try {
+    addrs = await resolve(host);
+  } catch {
+    // 解決関数の失敗（DoH の通信失敗・タイムアウト・SERVFAIL）は「解決できなかった」として拒否する。
+    throw new SsrfError("ホスト名を解決できませんでした。");
+  }
   if (!addrs || addrs.length === 0) {
     throw new SsrfError("ホスト名を解決できませんでした。");
   }
@@ -341,7 +379,9 @@ export async function safeFetch(rawUrl, options = {}, cfg = {}) {
 
   let current = rawUrl;
   for (let i = 0; i <= maxRedirects; i++) {
-    const u = await assertPublicUrl(current, { resolve });
+    // 各ホップで再検証する。初回だけ検証してリダイレクトを自動追従させると、
+    // 「公開URL → 内部アドレス」の 302 で素通しになる。
+    const u = await assertPublicUrl(current, { resolve, timeoutMs });
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -354,7 +394,8 @@ export async function safeFetch(rawUrl, options = {}, cfg = {}) {
 
     if (resp.status >= 300 && resp.status < 400) {
       const loc = resp.headers.get("location");
-      if (!loc) return await readCapped(resp, maxBytes);
+      // Location 欠落のリダイレクトは追従先を検証できない。本文を返さず失敗として扱う。
+      if (!loc) throw new SsrfError("リダイレクト応答に Location がありません。");
       current = new URL(loc, u).toString(); // 相対 Location を解決し次ループで再検証
       continue;
     }
