@@ -25,6 +25,12 @@
  *   GET  /health      ヘルスチェック
  */
 
+import { safeFetch, SsrfError } from "./lib/url-guard.js";
+import { enforceRateLimit, RateLimiter } from "./lib/ratelimit.js";
+
+// Durable Object をバインドした場合に備えてクラスを再エクスポートする（未バインドでも動作）。
+export { RateLimiter };
+
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // Whisper API の上限に合わせて 25MB
 const ALLOWED_EXTENSIONS = ["mp3", "mp4", "wav", "m4a"];
 const WHISPER_MODEL = "whisper-1";
@@ -46,6 +52,27 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     try {
+      // レート制限（コスト影響の大きいエンドポイントを優先）。
+      // テナント（APIキーのハッシュ）単位・IP単位で個別に評価する。
+      const rlCfg = rateLimitConfig(request.method, path);
+      if (rlCfg) {
+        const { ip, tenant } = await rateLimitKeyParts(request);
+        const buckets = [];
+        if (tenant !== "anon") {
+          buckets.push({ key: `rl:${rlCfg.name}:t:${tenant}`, limit: rlCfg.limit, windowMs: rlCfg.windowMs });
+        }
+        buckets.push({ key: `rl:${rlCfg.name}:ip:${ip}`, limit: rlCfg.ipLimit, windowMs: rlCfg.windowMs });
+        const rl = await enforceRateLimit(env, buckets);
+        if (!rl.allowed) {
+          return json(
+            { error: "リクエストが多すぎます。しばらく時間をおいて再度お試しください。" },
+            429,
+            origin,
+            { "Retry-After": String(rl.retryAfter || 60) }
+          );
+        }
+      }
+
       if (request.method === "GET" && path === "/health") {
         return json({ ok: true, service: "minutes-ai-worker" }, 200, origin);
       }
@@ -639,20 +666,31 @@ async function callSlackWebhook(webhookUrl, title, actionItems) {
   lines.push("");
   lines.push("minutes-ai により自動生成");
 
+  // SSRF 対策: webhook_url を検証してから送信する（内部/予約IP・リダイレクト再検証・
+  // サイズ上限・タイムアウトは safeFetch 側で担保）。
   let resp;
   try {
-    resp = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: lines.join("\n") }),
-    });
+    resp = await safeFetch(
+      webhookUrl,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: lines.join("\n") }),
+      },
+      { timeoutMs: 5000, maxBytes: 1024 * 1024 }
+    );
   } catch (e) {
+    if (e instanceof SsrfError) {
+      return { slack_ok: false, slack_error: `許可されていない Webhook URL です：${e.message}` };
+    }
     return { slack_ok: false, slack_error: "Slack への接続に失敗しました。Webhook URL をご確認ください。" };
   }
 
   if (!resp.ok) {
-    const msg = await safeErrorMessage(resp);
-    return { slack_ok: false, slack_error: `Slack への通知に失敗しました（${resp.status}）: ${msg}` };
+    return {
+      slack_ok: false,
+      slack_error: `Slack への通知に失敗しました（${resp.status}）: ${(resp.text || "").slice(0, 300)}`,
+    };
   }
   return { slack_ok: true };
 }
@@ -715,6 +753,54 @@ function getHeaderKey(request, headerName) {
   return v ? v.trim() : "";
 }
 
+/* ----------------------------- レート制限設定 ----------------------------- */
+
+// エンドポイントごとの上限（1分あたり）。null なら制限しない（health / preflight）。
+// limit: テナント（APIキー）単位 / ipLimit: IP 単位（NAT 配下の複数ユーザーを考慮し緩め）。
+function rateLimitConfig(method, path) {
+  if (method === "OPTIONS") return null;
+  if (path === "/health") return null;
+  // 文字起こし + AI 呼び出しを伴う最も高コストな経路
+  if (path === "/transcribe" || path === "/minutes") {
+    return { name: "heavy", limit: 10, ipLimit: 20, windowMs: 60_000 };
+  }
+  // AI 呼び出しを伴う経路
+  if (path === "/generate" || path === "/extract") {
+    return { name: "ai", limit: 20, ipLimit: 40, windowMs: 60_000 };
+  }
+  // 外部送信（Notion/Slack）を伴う経路
+  if (path === "/notify") {
+    return { name: "notify", limit: 20, ipLimit: 40, windowMs: 60_000 };
+  }
+  // D1 書き込み
+  if (path === "/save") {
+    return { name: "save", limit: 30, ipLimit: 60, windowMs: 60_000 };
+  }
+  // その他（GET /minutes/:id 等）
+  return { name: "default", limit: 60, ipLimit: 120, windowMs: 60_000 };
+}
+
+// レート制限のキー材料（IP と、APIキーのハッシュ由来テナント）を取り出す。
+// 生のAPIキーは保存・ログしない。ハッシュ化した値のみをキーに使う。
+async function rateLimitKeyParts(request) {
+  const ip =
+    request.headers.get("cf-connecting-ip") ||
+    (request.headers.get("x-forwarded-for") || "").split(",")[0].trim() ||
+    "unknown";
+  const keyMaterial =
+    getHeaderKey(request, "x-anthropic-key") || getHeaderKey(request, "x-openai-key");
+  const tenant = keyMaterial ? await sha256hex(keyMaterial) : "anon";
+  return { ip, tenant };
+}
+
+async function sha256hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  const bytes = new Uint8Array(buf);
+  let hex = "";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  return hex.slice(0, 32); // 前半 128bit で十分（衝突耐性・鍵材料の秘匿）
+}
+
 async function safeErrorMessage(resp) {
   try {
     const data = await resp.json();
@@ -737,9 +823,13 @@ function corsHeaders(origin) {
   };
 }
 
-function json(obj, status, origin) {
+function json(obj, status, origin, extraHeaders) {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders(origin) },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...corsHeaders(origin),
+      ...(extraHeaders || {}),
+    },
   });
 }

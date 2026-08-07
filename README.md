@@ -137,3 +137,29 @@ D1 を設定しない場合でも、文字起こし・議事録生成は問題�
 ## セキュリティ / プライバシー
 - API キーはブラウザの localStorage に保存され、API 呼び出し時にヘッダーで Worker に渡されます。Worker はそれを外部 API 呼び出しに使うだけで保存しません。
 - 共有端末では使用後に「保存した設定を消去」を実行してください。
+
+### SSRF 対策（`/notify` の Webhook）
+`/notify` の Slack Webhook URL はユーザー指定のため、外部送信前に宛先を検証しています（`worker/src/lib/url-guard.js`）:
+**fail-closed 方針**：判定できない入力はすべて拒否します。
+
+- スキームは http/https のみ。認証情報付き URL（`https://user:pass@host/`）は拒否
+- ホスト名 `localhost` / `ip6-localhost` / `*.localhost` / `*.local` / `*.internal` は名前だけで拒否（末尾ドット表記も正規化）
+- 内部・予約帯域（`0/8`・`10/8`・`100.64/10`・`127/8`・`169.254/16`・`172.16/12`・`192.168/16`・TEST-NET・`fc00::/7`・`fe80::/10`・マルチキャスト等）宛を拒否
+- 難読化 IP 表記（10進/16進/8進/inet_aton、IPv4-mapped/IPv4-compatible/6to4/NAT64 の IPv6 埋め込み v4）を正規化して判定
+- **ホスト名は必ず DNS-over-HTTPS（`cloudflare-dns.com`）で解決し、全 A/AAAA レコードを検査します**。解決をスキップする経路はありません。次はすべて拒否：解決不能・A/AAAA が0件・解決結果を IP として解釈できない・A/AAAA の片方しか確定的に引けなかった（DoH の `Status` を見て SERVFAIL と「レコード無し」を区別し、部分的な解決結果は信用しない）
+- リダイレクトは自動追従せず、**ホップごとに上記の検証をやり直します**（上限5ホップ）。`Location` 欠落のリダイレクトは失敗として扱います
+- レスポンスサイズ上限（1MB）、DNS 解決・本体取得それぞれにタイムアウト（5s）を適用
+- **残余リスク（これのみ）**: 検証時の DNS 解決結果と、`fetch` 実体が使う解決結果がずれうる（DNS リバインディング / TOCTOU）。Workers ランタイムでは検証済み IP への接続を強制できないため、この窓は塞げません。より厳格にしたい場合は Slack Webhook のホストを `hooks.slack.com` に固定する運用も可能です。
+
+### レート制限
+全エンドポイントにスライディングウィンドウ方式のレート制限を適用しています（`worker/src/lib/ratelimit.js`）。テナント（API キーのハッシュ）単位・IP 単位で個別に評価し、文字起こし・AI 呼び出し・外部送信など高コストな経路を優先的に制限します。超過時は `429`（`Retry-After` 付き）を返します。
+- 既定は Durable Object 未バインド時のメモリ版フォールバック（isolate ローカル・ベストエフォート）。
+- 本番で厳密なグローバル制限が必要な場合は `wrangler.toml` の `RATE_LIMITER` Durable Object バインドを有効化してください。
+
+### 開発（テスト / 型チェック）
+```bash
+cd worker
+npm install
+npm test        # vitest（url-guard / ratelimit / worker E2E）
+npm run typecheck  # tsc --checkJs
+```
