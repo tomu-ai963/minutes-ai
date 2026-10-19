@@ -140,7 +140,7 @@ async function handleTranscribe(request, origin) {
   const validation = validateFile(file);
   if (validation) return json({ error: validation }, 400, origin);
 
-  const transcript = await callWhisper(file, openaiKey, form.get("language"), origin);
+  const transcript = await callWhisper(file, openaiKey, form.get("language"));
   if (transcript.error) return json({ error: transcript.error }, transcript.status, origin);
 
   return json({ transcript: transcript.text }, 200, origin);
@@ -164,7 +164,7 @@ async function handleGenerate(request, origin) {
     return json({ error: "文字起こしテキストが空です。" }, 400, origin);
   }
 
-  const result = await callClaude(transcript, anthropicKey, body.model, origin);
+  const result = await callClaude(transcript, anthropicKey, body.model);
   if (result.error) return json({ error: result.error }, result.status, origin);
 
   return json({ minutes: result.markdown }, 200, origin);
@@ -196,14 +196,14 @@ async function handleMinutes(request, origin) {
   const validation = validateFile(file);
   if (validation) return json({ error: validation }, 400, origin);
 
-  const transcript = await callWhisper(file, openaiKey, form.get("language"), origin);
+  const transcript = await callWhisper(file, openaiKey, form.get("language"));
   if (transcript.error) return json({ error: transcript.error }, transcript.status, origin);
 
   // 議事録生成とアクションアイテム抽出はどちらも文字起こし結果のみに依存するので並列に実行する。
   // 失敗時の扱いは直列実行時と同じ：議事録生成の失敗（例外含む）を優先して返し、
   // 抽出の失敗（エラー応答）は空配列にフォールバックする。抽出側の例外は 500 になる。
   const [minutesRes, extractRes] = await Promise.allSettled([
-    callClaude(transcript.text, anthropicKey, form.get("model"), origin),
+    callClaude(transcript.text, anthropicKey, form.get("model")),
     callClaudeActionItems(transcript.text, anthropicKey, form.get("model")),
   ]);
   if (minutesRes.status === "rejected") throw minutesRes.reason;
@@ -345,7 +345,7 @@ async function handleGetMinutes(id, env, origin) {
 
 /* ----------------------------- 外部API呼び出し ----------------------------- */
 
-async function callWhisper(file, openaiKey, language, origin) {
+async function callWhisper(file, openaiKey, language) {
   const upstream = new FormData();
   upstream.append("file", file, file.name || "audio");
   upstream.append("model", WHISPER_MODEL);
@@ -377,9 +377,10 @@ async function callWhisper(file, openaiKey, language, origin) {
   return { text: data.text || "" };
 }
 
-async function callClaude(transcript, anthropicKey, model, origin) {
-  const prompt = buildMinutesPrompt(transcript);
-
+// Anthropic Messages API を 1 回呼び、テキストブロックを連結して返す。
+// labels.connect: 接続失敗時のメッセージ / labels.failure: その他の失敗時の接頭辞
+// 戻り値: { text } または { error, status }
+async function callAnthropicMessages(prompt, anthropicKey, model, labels) {
   let resp;
   try {
     resp = await fetch("https://api.anthropic.com/v1/messages", {
@@ -396,7 +397,7 @@ async function callClaude(transcript, anthropicKey, model, origin) {
       }),
     });
   } catch (e) {
-    return { error: "議事録生成APIへの接続に失敗しました。時間をおいて再度お試しください。", status: 502 };
+    return { error: labels.connect, status: 502 };
   }
 
   if (!resp.ok) {
@@ -407,63 +408,39 @@ async function callClaude(transcript, anthropicKey, model, origin) {
     if (resp.status === 429) {
       return { error: "Anthropic APIのレート制限です。時間をおいて再度お試しください。", status: 429 };
     }
-    return { error: `議事録の生成に失敗しました（${resp.status}）: ${msg}`, status: 502 };
+    return { error: `${labels.failure}（${resp.status}）: ${msg}`, status: 502 };
   }
 
   const data = await resp.json();
-  const markdown = (data.content || [])
+  const text = (data.content || [])
     .filter((c) => c.type === "text")
     .map((c) => c.text)
     .join("\n")
     .trim();
+  return { text };
+}
 
-  if (!markdown) {
+async function callClaude(transcript, anthropicKey, model) {
+  const r = await callAnthropicMessages(buildMinutesPrompt(transcript), anthropicKey, model, {
+    connect: "議事録生成APIへの接続に失敗しました。時間をおいて再度お試しください。",
+    failure: "議事録の生成に失敗しました",
+  });
+  if (r.error) return r;
+  if (!r.text) {
     return { error: "議事録の生成結果が空でした。もう一度お試しください。", status: 502 };
   }
-  return { markdown };
+  return { markdown: r.text };
 }
 
 // テキストからアクションアイテムを抽出し、JSON 配列にパースして返す。
 // 戻り値: { action_items } / { error, status } / { parseError: true, raw, action_items: [] }
 async function callClaudeActionItems(text, anthropicKey, model) {
-  const prompt = buildActionItemsPrompt(text);
-
-  let resp;
-  try {
-    resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": anthropicKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify({
-        model: model || CLAUDE_MODEL,
-        max_tokens: 4096,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-  } catch (e) {
-    return { error: "アクションアイテム抽出APIへの接続に失敗しました。時間をおいて再度お試しください。", status: 502 };
-  }
-
-  if (!resp.ok) {
-    const msg = await safeErrorMessage(resp);
-    if (resp.status === 401) {
-      return { error: "Anthropic APIキーが無効です。キーを確認してください。", status: 401 };
-    }
-    if (resp.status === 429) {
-      return { error: "Anthropic APIのレート制限です。時間をおいて再度お試しください。", status: 429 };
-    }
-    return { error: `アクションアイテムの抽出に失敗しました（${resp.status}）: ${msg}`, status: 502 };
-  }
-
-  const data = await resp.json();
-  const rawText = (data.content || [])
-    .filter((c) => c.type === "text")
-    .map((c) => c.text)
-    .join("\n")
-    .trim();
+  const r = await callAnthropicMessages(buildActionItemsPrompt(text), anthropicKey, model, {
+    connect: "アクションアイテム抽出APIへの接続に失敗しました。時間をおいて再度お試しください。",
+    failure: "アクションアイテムの抽出に失敗しました",
+  });
+  if (r.error) return r;
+  const rawText = r.text;
 
   const parsed = parseActionItems(rawText);
   if (!parsed) {
