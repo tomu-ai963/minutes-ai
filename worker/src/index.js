@@ -28,6 +28,7 @@
 import { safeFetch, SsrfError } from "./lib/url-guard.js";
 import { enforceRateLimit, RateLimiter } from "./lib/ratelimit.js";
 import { parseActionItems } from "./lib/action-items.js";
+import { formatJstDisplay, formatJstIso } from "./lib/datetime.js";
 
 // Durable Object をバインドした場合に備えてクラスを再エクスポートする（未バインドでも動作）。
 export { RateLimiter };
@@ -319,7 +320,7 @@ async function handleSave(request, env, origin) {
     return json({ error: "保存する議事録が空です。" }, 400, origin);
   }
   const id = crypto.randomUUID();
-  const createdAt = new Date().toISOString();
+  const createdAt = formatJstIso();
   await env.DB.prepare(
     "INSERT INTO minutes (id, title, markdown, created_at) VALUES (?, ?, ?, ?)"
   )
@@ -705,7 +706,7 @@ function buildMinutesPrompt(transcript) {
 # 文字起こしテキスト
 """
 ${transcript}
-"""`.replace("{{DATE}}", new Date().toISOString());
+"""`.replace("{{DATE}}", formatJstDisplay());
 }
 
 /* ----------------------------- ユーティリティ ----------------------------- */
