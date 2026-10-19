@@ -266,7 +266,10 @@ async function handleNotify(request, origin) {
   }
 
   const minutes = (body.minutes || "").trim();
-  const actionItems = Array.isArray(body.action_items) ? body.action_items : [];
+  // null など オブジェクトでない要素は整形時に TypeError になるため落とす
+  const actionItems = Array.isArray(body.action_items)
+    ? body.action_items.filter((it) => it !== null && typeof it === "object" && !Array.isArray(it))
+    : [];
   const title = (body.title || "").trim() || "議事録";
   const notion = body.notion || {};
   const slack = body.slack || {};
