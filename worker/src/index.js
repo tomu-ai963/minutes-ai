@@ -108,12 +108,10 @@ export default {
 
       return json({ error: "エンドポイントが見つかりません。" }, 404, origin);
     } catch (err) {
-      // 想定外の例外は 500 で日本語化して返す
-      return json(
-        { error: "サーバー内部でエラーが発生しました。", detail: String(err && err.message || err) },
-        500,
-        origin
-      );
+      // 想定外の例外は 500 で日本語化して返す。内部情報（err.message 等）は応答に含めず、
+      // API キーを伏せたうえでログにのみ残す。
+      console.error(`[minutes-ai] unhandled error on ${request.method} ${path}: ${describeError(err, request)}`);
+      return json({ error: "サーバー内部でエラーが発生しました。" }, 500, origin);
     }
   },
 };
@@ -799,6 +797,17 @@ async function sha256hex(text) {
   let hex = "";
   for (const b of bytes) hex += b.toString(16).padStart(2, "0");
   return hex.slice(0, 32); // 前半 128bit で十分（衝突耐性・鍵材料の秘匿）
+}
+
+// ログ用に例外を 1 行の文字列にする。リクエストヘッダーの API キーと、
+// キーらしき文字列（sk-...）は伏せ字にする。
+function describeError(err, request) {
+  let text = err && err.name ? `${err.name}: ${err.message}` : String(err);
+  const secrets = [getHeaderKey(request, "x-openai-key"), getHeaderKey(request, "x-anthropic-key")];
+  for (const s of secrets) {
+    if (s) text = text.split(s).join("[REDACTED]");
+  }
+  return text.replace(/sk-[A-Za-z0-9_-]{8,}/g, "[REDACTED]").slice(0, 500);
 }
 
 async function safeErrorMessage(resp) {
