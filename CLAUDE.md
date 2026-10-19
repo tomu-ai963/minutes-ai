@@ -46,7 +46,7 @@
 
 ## v3 追加機能（2026-06-30）
 - `POST /notify`：Notion保存＋Slack通知エンドポイント。
-  - `notion.enabled=true` → Notion API（`/v1/pages`, `Notion-Version: 2022-06-28`）でページ作成（議事録本文を paragraph に2000文字ごと分割＋アクションアイテムを heading_2「✅ アクションアイテム」＋ bulleted_list_item）。タイトルプロパティ名は「タイトル」→「Name」のフォールバック。
+  - `notion.enabled=true` → Notion API（`/v1/pages`, `Notion-Version: 2022-06-28`）でページ作成（議事録本文を paragraph に2000文字ごと分割＋アクションアイテムを heading_2「✅ アクションアイテム」＋ bulleted_list_item）。タイトルプロパティ名は `GET /v1/databases/:id` で type が title のプロパティを事前取得する。
   - `slack.enabled=true` → Incoming Webhook にシンプルな text 形式で通知。
   - トークン・Webhook URL はリクエストボディで受け取り、サーバーには保存しない（BYOK）。Notion 失敗時も Slack は継続。
 - フロントエンド設定画面に Notion / Slack 連携の ON/OFF 設定（チェックでフィールド表示）を追加。
