@@ -27,6 +27,7 @@
 
 import { safeFetch, SsrfError } from "./lib/url-guard.js";
 import { enforceRateLimit, RateLimiter } from "./lib/ratelimit.js";
+import { parseActionItems } from "./lib/action-items.js";
 
 // Durable Object をバインドした場合に備えてクラスを再エクスポートする（未バインドでも動作）。
 export { RateLimiter };
@@ -470,35 +471,6 @@ async function callClaudeActionItems(text, anthropicKey, model) {
     return { parseError: true, raw: rawText, action_items: [] };
   }
   return { action_items: parsed };
-}
-
-// Claude の出力（理想は純粋な JSON 配列）を堅牢にパースする。
-// Markdown コードフェンス等が混じっても、最初の配列部分を抜き出して試みる。
-function parseActionItems(rawText) {
-  if (!rawText) return [];
-  const candidates = [];
-  candidates.push(rawText);
-
-  // ```json ... ``` のようなコードフェンスを除去
-  const fenceMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenceMatch) candidates.push(fenceMatch[1].trim());
-
-  // 最初の "[" から最後の "]" までを配列候補として抽出
-  const start = rawText.indexOf("[");
-  const end = rawText.lastIndexOf("]");
-  if (start !== -1 && end !== -1 && end > start) {
-    candidates.push(rawText.slice(start, end + 1));
-  }
-
-  for (const c of candidates) {
-    try {
-      const v = JSON.parse(c);
-      if (Array.isArray(v)) return v;
-    } catch {
-      // 次の候補を試す
-    }
-  }
-  return null;
 }
 
 function buildActionItemsPrompt(text) {
