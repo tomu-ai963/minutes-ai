@@ -198,12 +198,18 @@ async function handleMinutes(request, origin) {
   const transcript = await callWhisper(file, openaiKey, form.get("language"), origin);
   if (transcript.error) return json({ error: transcript.error }, transcript.status, origin);
 
-  const result = await callClaude(transcript.text, anthropicKey, form.get("model"), origin);
+  // 議事録生成とアクションアイテム抽出はどちらも文字起こし結果のみに依存するので並列に実行する。
+  // 失敗時の扱いは直列実行時と同じ：議事録生成の失敗（例外含む）を優先して返し、
+  // 抽出の失敗（エラー応答）は空配列にフォールバックする。抽出側の例外は 500 になる。
+  const [minutesRes, extractRes] = await Promise.allSettled([
+    callClaude(transcript.text, anthropicKey, form.get("model"), origin),
+    callClaudeActionItems(transcript.text, anthropicKey, form.get("model")),
+  ]);
+  if (minutesRes.status === "rejected") throw minutesRes.reason;
+  const result = minutesRes.value;
   if (result.error) return json({ error: result.error }, result.status, origin);
-
-  // 議事録生成のあとに、同じ文字起こしからアクションアイテムを順次抽出する。
-  // 抽出に失敗しても議事録本体は返したいので、エラー時は空配列にフォールバックする。
-  const extracted = await callClaudeActionItems(transcript.text, anthropicKey, form.get("model"));
+  if (extractRes.status === "rejected") throw extractRes.reason;
+  const extracted = extractRes.value;
 
   return json(
     {
