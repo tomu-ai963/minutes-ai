@@ -501,60 +501,81 @@ const NOTION_BLOCK_LIMIT = 2000; // paragraph の rich_text 1 ブロックあた
 // 議事録本文＋アクションアイテムを Notion データベースにページとして作成する。
 // 戻り値: { notion_ok: true, notion_page_url } または { notion_ok: false, notion_error }
 async function callNotionCreatePage(token, databaseId, title, minutes, actionItems) {
-  const children = buildNotionChildren(minutes, actionItems);
+  const headers = {
+    "content-type": "application/json",
+    Authorization: `Bearer ${token}`,
+    "Notion-Version": NOTION_VERSION,
+  };
 
-  // タイトルプロパティ名は DB により "Name" / "タイトル" などと異なる。
-  // MVP では "タイトル" → "Name" の順にフォールバックして試行する。
-  const titlePropNames = ["タイトル", "Name"];
-  let lastError = "詳細不明";
+  // タイトルプロパティ名は DB により "Name" / "タイトル" などと異なるため、
+  // GET /v1/databases/:id で type が "title" のプロパティ名を事前に取得する。
+  const prop = await fetchNotionTitleProperty(databaseId, headers);
+  if (prop.error) return { notion_ok: false, notion_error: prop.error };
 
-  for (const propName of titlePropNames) {
-    const payload = {
-      parent: { database_id: databaseId },
-      properties: {
-        [propName]: {
-          title: [{ text: { content: title.slice(0, NOTION_BLOCK_LIMIT) } }],
-        },
+  const payload = {
+    parent: { database_id: databaseId },
+    properties: {
+      [prop.name]: {
+        title: [{ text: { content: title.slice(0, NOTION_BLOCK_LIMIT) } }],
       },
-      children,
-    };
+    },
+    children: buildNotionChildren(minutes, actionItems),
+  };
 
-    let resp;
-    try {
-      resp = await fetch("https://api.notion.com/v1/pages", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${token}`,
-          "Notion-Version": NOTION_VERSION,
-        },
-        body: JSON.stringify(payload),
-      });
-    } catch (e) {
-      return { notion_ok: false, notion_error: "Notion API への接続に失敗しました。時間をおいて再度お試しください。" };
-    }
-
-    if (resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      return { notion_ok: true, notion_page_url: data.url || "" };
-    }
-
-    const msg = await safeErrorMessage(resp);
-    lastError = msg;
-    if (resp.status === 401) {
-      return { notion_ok: false, notion_error: "Notion のトークンが無効です。インテグレーション設定をご確認ください。" };
-    }
-    // プロパティ名不一致（400: validation_error 等）の場合は次の候補名で再試行する。
-    // それ以外（404 など）は再試行しても無駄なので即返す。
-    if (resp.status !== 400) {
-      return { notion_ok: false, notion_error: `Notion への保存に失敗しました（${resp.status}）: ${msg}` };
-    }
+  let resp;
+  try {
+    resp = await fetch("https://api.notion.com/v1/pages", {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    return { notion_ok: false, notion_error: "Notion API への接続に失敗しました。時間をおいて再度お試しください。" };
   }
 
-  return {
-    notion_ok: false,
-    notion_error: `Notion への保存に失敗しました。データベースのタイトルプロパティ名（"タイトル" / "Name"）と共有設定をご確認ください: ${lastError}`,
-  };
+  if (resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    return { notion_ok: true, notion_page_url: data.url || "" };
+  }
+
+  const msg = await safeErrorMessage(resp);
+  if (resp.status === 401) {
+    return { notion_ok: false, notion_error: "Notion のトークンが無効です。インテグレーション設定をご確認ください。" };
+  }
+  return { notion_ok: false, notion_error: `Notion への保存に失敗しました（${resp.status}）: ${msg}` };
+}
+
+// データベースのスキーマからタイトルプロパティ名を取得する。
+// 戻り値: { name } または { error }
+async function fetchNotionTitleProperty(databaseId, headers) {
+  let resp;
+  try {
+    resp = await fetch(`https://api.notion.com/v1/databases/${encodeURIComponent(databaseId)}`, {
+      method: "GET",
+      headers,
+    });
+  } catch (e) {
+    return { error: "Notion API への接続に失敗しました。時間をおいて再度お試しください。" };
+  }
+
+  if (!resp.ok) {
+    const msg = await safeErrorMessage(resp);
+    if (resp.status === 401) {
+      return { error: "Notion のトークンが無効です。インテグレーション設定をご確認ください。" };
+    }
+    if (resp.status === 404) {
+      return { error: "Notion のデータベースが見つかりません。データベース ID と、インテグレーションへの共有設定をご確認ください。" };
+    }
+    return { error: `Notion のデータベース情報の取得に失敗しました（${resp.status}）: ${msg}` };
+  }
+
+  const data = await resp.json().catch(() => ({}));
+  const props = (data && data.properties) || {};
+  const name = Object.keys(props).find((k) => props[k] && props[k].type === "title");
+  if (!name) {
+    return { error: "Notion のデータベースにタイトルプロパティが見つかりませんでした。" };
+  }
+  return { name };
 }
 
 // 議事録本文を paragraph ブロック（2000 文字ごとに分割）に、
