@@ -623,23 +623,46 @@ function splitText(text, maxLen) {
   return out;
 }
 
-// Slack Incoming Webhook へシンプルな text 形式で通知する。
-// 戻り値: { slack_ok: true } または { slack_ok: false, slack_error }
-async function callSlackWebhook(webhookUrl, title, actionItems) {
+const SLACK_MAX_ITEMS = 30; // 通知本文に載せるアクションアイテムの上限
+const SLACK_MAX_LINE = 300; // 1 行（タイトル・アイテム）あたりの文字数上限
+
+// Slack の mrkdwn 制御文字をエスケープする。<!channel> / <!here> / <@U…> / <!subteam^…> などの
+// メンションやリンク記法は < > で始まるため、これで無効化される。
+function escapeSlackText(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function slackLine(text) {
+  const s = String(text);
+  return escapeSlackText(s.length > SLACK_MAX_LINE ? `${s.slice(0, SLACK_MAX_LINE)}…` : s);
+}
+
+// Slack 通知の本文を組み立てる。利用者・LLM 由来の文字列はすべてエスケープする。
+function buildSlackText(title, actionItems) {
   const lines = [];
   lines.push("📝 議事録が生成されました");
-  if (title) lines.push(title);
+  if (title) lines.push(slackLine(title));
   lines.push(`✅ アクションアイテム（${actionItems.length}件）`);
   lines.push("");
   if (actionItems.length === 0) {
     lines.push("アクションアイテムはありませんでした。");
   } else {
-    for (const it of actionItems) {
-      lines.push(formatActionItemLine(it));
+    for (const it of actionItems.slice(0, SLACK_MAX_ITEMS)) {
+      lines.push(slackLine(formatActionItemLine(it)));
+    }
+    if (actionItems.length > SLACK_MAX_ITEMS) {
+      lines.push(`…ほか ${actionItems.length - SLACK_MAX_ITEMS} 件（全件は議事録をご確認ください）`);
     }
   }
   lines.push("");
   lines.push("minutes-ai により自動生成");
+  return lines.join("\n");
+}
+
+// Slack Incoming Webhook へシンプルな text 形式で通知する。
+// 戻り値: { slack_ok: true } または { slack_ok: false, slack_error }
+async function callSlackWebhook(webhookUrl, title, actionItems) {
+  const text = buildSlackText(title, actionItems);
 
   // SSRF 対策: webhook_url を検証してから送信する（内部/予約IP・リダイレクト再検証・
   // サイズ上限・タイムアウトは safeFetch 側で担保）。
@@ -650,7 +673,7 @@ async function callSlackWebhook(webhookUrl, title, actionItems) {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: lines.join("\n") }),
+        body: JSON.stringify({ text }),
       },
       { timeoutMs: 5000, maxBytes: 1024 * 1024 }
     );
