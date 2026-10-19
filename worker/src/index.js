@@ -41,7 +41,7 @@ const ANTHROPIC_VERSION = "2023-06-01";
 
 export default {
   async fetch(request, env) {
-    const origin = env.ALLOWED_ORIGIN || "*";
+    const origin = resolveAllowedOrigin(request, env);
 
     // CORS プリフライト
     if (request.method === "OPTIONS") {
@@ -823,13 +823,27 @@ async function safeErrorMessage(resp) {
   }
 }
 
+// ALLOWED_ORIGIN 未設定時に許可するローカル開発用オリジン（http://localhost:* / http://127.0.0.1:*）
+const LOCAL_DEV_ORIGIN_RE = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$/;
+
+// 応答に付ける Access-Control-Allow-Origin の値を決める。null なら付けない（ブラウザ側で拒否される）。
+// - ALLOWED_ORIGIN 設定時（本番）: その値を常に返す
+// - 未設定時: "*" には落とさず、リクエストの Origin がローカル開発用オリジンのときだけ反射する
+function resolveAllowedOrigin(request, env) {
+  if (env && env.ALLOWED_ORIGIN) return env.ALLOWED_ORIGIN;
+  const reqOrigin = request.headers.get("origin") || "";
+  return LOCAL_DEV_ORIGIN_RE.test(reqOrigin) ? reqOrigin : null;
+}
+
 function corsHeaders(origin) {
-  return {
-    "Access-Control-Allow-Origin": origin,
+  const headers = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, x-openai-key, x-anthropic-key",
     "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
   };
+  if (origin) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
 }
 
 function json(obj, status, origin, extraHeaders) {

@@ -13,7 +13,8 @@ compatibility_date = "2024-09-23"
 # database_name = "minutes-ai-db"
 # database_id = "ここに database_id を貼り付け"
 
-# 本番では "*" を実際のフロントエンド（GitHub Pages）の Origin に絞ることを推奨。
+# フロントエンド（GitHub Pages）の Origin。未設定時は "*" ではなく
+# ローカル開発用（http://localhost:* / http://127.0.0.1:*）のみ許可する。
 # 例: ALLOWED_ORIGIN = "https://your-name.github.io"
 [vars]
 ALLOWED_ORIGIN = "https://tomu-ai963.github.io"
