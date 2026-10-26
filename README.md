@@ -7,7 +7,7 @@ BYOK（Bring Your Own Key）モデルの **AI議事録自動生成ツール**。
 - **Backend**：Cloudflare Workers
 - **文字起こし**：OpenAI Whisper API（ユーザーのキー）
 - **議事録生成**：Anthropic Claude API（ユーザーのキー）
-- **ストレージ**：Cloudflare D1（任意）
+- **ストレージ**：なし（議事録は Worker に保存しない。残す場合は Notion・Slack 連携を使う）
 
 APIキーは**ブラウザの localStorage にのみ保存**され、サーバーには保存されません。
 
@@ -43,7 +43,6 @@ minutes-ai/
 │   └── index.html         # 単一ファイルのWebアプリ
 └── worker/
     ├── src/index.js       # Cloudflare Workers 本体
-    ├── schema.sql         # D1 スキーマ（任意機能）
     └── wrangler.toml
 ```
 
@@ -71,14 +70,10 @@ wrangler deploy
 ALLOWED_ORIGIN = "https://<your-name>.github.io"
 ```
 
-#### （任意）議事録の保存に D1 を使う
-```bash
-wrangler d1 create minutes-ai-db
-# 出力された database_id を wrangler.toml の [[d1_databases]] に貼り付けてコメント解除
-wrangler d1 execute minutes-ai-db --file=./schema.sql
-wrangler deploy
-```
-D1 を設定しない場合でも、文字起こし・議事録生成は問題なく動作します（保存機能のみ無効）。
+#### 議事録の保存について
+Worker は議事録を保存しません（BYOK の性質を維持するため、Cloudflare D1 は使いません）。
+`POST /save` と `GET /minutes/:id` は常に `410 Gone` を返します。D1 用の `schema.sql` も削除済みです。
+議事録を残したい場合は、設定画面で Notion 連携（`/notify`）を有効にしてください。
 
 ### 2. フロントエンドを公開
 `frontend/index.html` を GitHub Pages 等で配信します。

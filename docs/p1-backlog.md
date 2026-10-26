@@ -20,7 +20,7 @@ High の H-1（/notify の SSRF）・H-2（レート制限）は main に反映�
 | M-4 | parseActionItems のスキーマ未検証 | ✅ `2411f67` |
 | L-1 | マジックバイト検証 | 現状維持（対応しない） |
 | L-2〜L-5 | 低優先度の改善 | ✅ L-2 `95504cb` / L-3 `7cd3c1d` / L-4 `39f412a` / L-5 `0a62372` |
-| M-2 | /save・/minutes/:id が無認証 | 要判断（D1 を有効化するかどうか） |
+| M-2 | /save・/minutes/:id が無認証 | ✅ D1 は使わない（常に 410） |
 
 ## M-5: 500 レスポンスに内部エラー詳細 — ✅ 完了 `f3d6a5a`
 - 現在位置: `worker/src/index.js:113`
@@ -52,15 +52,17 @@ High の H-1（/notify の SSRF）・H-2（レート制限）は main に反映�
   `GET /v1/databases/:id` で事前取得する方式へ — ✅ 完了 `95504cb`（type が title のプロパティ名を取得し POST は 1 回。404/401/タイトルなしを個別の日本語エラーに。`test/notion.test.js`）
 - L-3: `callWhisper` / `callClaude` の未使用 `origin` 引数、`callClaude` と `callClaudeActionItems` の重複 →
   共通関数 `callAnthropicMessages` に集約 — ✅ 完了 `7cd3c1d`（文言はエンドポイントごとに従来どおり。`test/anthropic.test.js`）
-- L-4: 生成日時が UTC（`index.js:317`、`index.js:734` 付近の `toISOString()`）→ Asia/Tokyo で整形 — ✅ 完了 `39f412a`（プロンプトは `YYYY-MM-DD HH:mm (JST)`、`/save` の `created_at` は `+09:00` 付き ISO 8601。`test/datetime.test.js`）
+- L-4: 生成日時が UTC（`index.js:317`、`index.js:734` 付近の `toISOString()`）→ Asia/Tokyo で整形 — ✅ 完了 `39f412a`（プロンプトは `YYYY-MM-DD HH:mm (JST)`。`/save` の `created_at`（`+09:00` 付き ISO 8601）は M-2 で `/save` ごと撤去。`test/datetime.test.js`）
 - L-5: Slack 通知本文へのメンション注入（`<!channel>` 等）・件数上限なし → エスケープと件数上限 — ✅ 完了 `0a62372`（`& < >` をエスケープ、最大 30 件＋「…ほか N 件」、1 行 300 文字。`test/slack.test.js`）
 
-## M-2: /save・/minutes/:id が無認証（要判断）
-- 現在位置: `handleSave`（`index.js:302`）・`handleGetMinutes`（`index.js:326`）。D1 バインドは未設定で、現状は 501 を返す
-- D1 を有効化すると無制限 INSERT・本文サイズ上限なし・UUID を知れば閲覧可能になる
-- 方針: D1 有効化と同時に本文サイズ上限＋簡易トークン認証。D1 を使う予定がなければ現状維持
-- **D1 を有効化するかが決まるまで着手しない**
+## M-2: /save・/minutes/:id が無認証 — ✅ 完了（D1 は使わない）
+- 旧状態: `handleSave`・`handleGetMinutes` が `env.DB` があれば無認証で INSERT / SELECT し、なければ 501 を返していた。D1 をバインドしただけで無認証の保存・閲覧（無制限 INSERT・本文サイズ上限なし・UUID を知れば閲覧可能）が有効になる状態だった
+- 判断（2026-10-26、とむ）: D1 は使わない。Worker に議事録を保存しない BYOK の性質を維持する。議事録を残したい場合は `/notify` の Notion・Slack 連携を使う
+- 実施: `POST /save`・`GET /minutes/:id` は `env.DB` の有無に関わらず常に `410 Gone`（`{ error: "議事録の保存機能は提供していません。議事録を残す場合は Notion 連携（/notify）をご利用ください。" }`、CORS ヘッダー付き。404 ではなく意図的に提供しないことを示す）。リクエストボディは読まない
+- 撤去: D1 の INSERT / SELECT と `env.DB` の参照、レート制限の `save` バケット（`/save` は `default` に落ちる）、`wrangler.toml` の D1 バインドのコメント、`worker/schema.sql`、`/save` 専用だった `formatJstIso`
+- フロントエンドは `/save`・`GET /minutes/:id` を呼んでいなかったため変更なし
+- テスト: `test/save-disabled.test.js`
 
 ## 将来の課金移行への助言（参考）
-キー解決の一元化（`resolveKeys`）／前段フック（認証・レート制限・使用量計測）／D1 スキーマへの `user_id`・`usage_log` 追加。
+キー解決の一元化（`resolveKeys`）／前段フック（認証・レート制限・使用量計測）／（D1 は使わない方針のため、使用量計測が必要になったら保存先から別途検討）。
 自社キーで課金を始めると H-2 は直接の金銭被害に格上げされる。

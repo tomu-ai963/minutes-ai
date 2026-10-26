@@ -28,11 +28,3 @@ export function formatJstDisplay(date = new Date()) {
   return `${t.y}-${t.mo}-${t.d} ${t.h}:${t.mi} (JST)`;
 }
 
-/**
- * 保存用（ISO 8601、+09:00 オフセット付き）: "2026-10-20T05:30:00+09:00"
- * @param {Date} [date]
- */
-export function formatJstIso(date = new Date()) {
-  const t = jstParts(date);
-  return `${t.y}-${t.mo}-${t.d}T${t.h}:${t.mi}:${t.s}+09:00`;
-}

@@ -12,7 +12,7 @@
 - **Backend**：`worker/src/index.js`（Cloudflare Workers）。
 - **文字起こし**：OpenAI Whisper API（`whisper-1`）。
 - **議事録生成**：Anthropic Claude API（既定 `claude-sonnet-4-6`）。
-- **ストレージ**：Cloudflare D1（任意。議事録の保存に使用。未設定でも本体機能は動作）。
+- **ストレージ**：なし。議事録は Worker に保存しない（D1 は使わない。`/save`・`GET /minutes/:id` は常に 410）。残す場合は `/notify` の Notion・Slack 連携を使う。
 
 ## 必ず守るルール
 1. **APIキーはフロントエンドの localStorage に保存する**こと。サーバー（Worker / D1）には保存しない。

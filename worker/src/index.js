@@ -7,12 +7,12 @@
  *   - OpenAI Whisper API へのプロキシ（ブラウザからの直接アクセスは CORS で
  *     ブロックされるため、Worker 経由で中継する）
  *   - Anthropic Claude API を使った議事録生成
- *   - （任意）Cloudflare D1 への議事録保存
  *
  * 重要:
  *   - API キーはリクエストヘッダーで受け取り、その場で外部 API 呼び出しに使うだけ。
  *     Worker / サーバー側には一切保存しない。
  *   - エラーメッセージはすべて日本語で返す。
+ *   - 議事録は Worker 側に保存しない。残したい場合は /notify（Notion・Slack 連携）を使う。
  *
  * エンドポイント:
  *   POST /transcribe  音声ファイル(multipart/form-data) → 文字起こしテキスト
@@ -20,15 +20,15 @@
  *   POST /minutes     /transcribe + /generate を一括実行（action_items 付き）
  *   POST /extract     文字起こし/議事録(JSON) → アクションアイテム JSON 配列
  *   POST /notify      議事録＋アクションアイテムを Notion 保存／Slack 通知
- *   POST /save        議事録を D1 に保存（D1 未設定なら 501）
- *   GET  /minutes/:id 保存済み議事録の取得（D1 未設定なら 501）
+ *   POST /save        常に 410（議事録の保存機能は提供しない。/notify の Notion 連携を案内）
+ *   GET  /minutes/:id 常に 410（同上）
  *   GET  /health      ヘルスチェック
  */
 
 import { safeFetch, SsrfError } from "./lib/url-guard.js";
 import { enforceRateLimit, RateLimiter } from "./lib/ratelimit.js";
 import { parseActionItems } from "./lib/action-items.js";
-import { formatJstDisplay, formatJstIso } from "./lib/datetime.js";
+import { formatJstDisplay } from "./lib/datetime.js";
 
 // Durable Object をバインドした場合に備えてクラスを再エクスポートする（未バインドでも動作）。
 export { RateLimiter };
@@ -100,12 +100,11 @@ export default {
       }
 
       if (request.method === "POST" && path === "/save") {
-        return await handleSave(request, env, origin);
+        return storageNotProvided(origin);
       }
 
-      const m = path.match(/^\/minutes\/([A-Za-z0-9_-]+)$/);
-      if (request.method === "GET" && m) {
-        return await handleGetMinutes(m[1], env, origin);
+      if (request.method === "GET" && /^\/minutes\/[A-Za-z0-9_-]+$/.test(path)) {
+        return storageNotProvided(origin);
       }
 
       return json({ error: "エンドポイントが見つかりません。" }, 404, origin);
@@ -308,43 +307,14 @@ async function handleNotify(request, origin) {
   return json(result, 200, origin);
 }
 
-async function handleSave(request, env, origin) {
-  if (!env.DB) {
-    return json({ error: "保存機能は未設定です（Cloudflare D1 が構成されていません）。" }, 501, origin);
-  }
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: "リクエスト形式が不正です。JSON で送信してください。" }, 400, origin);
-  }
-  const markdown = (body.minutes || "").trim();
-  if (!markdown) {
-    return json({ error: "保存する議事録が空です。" }, 400, origin);
-  }
-  const id = crypto.randomUUID();
-  const createdAt = formatJstIso();
-  await env.DB.prepare(
-    "INSERT INTO minutes (id, title, markdown, created_at) VALUES (?, ?, ?, ?)"
-  )
-    .bind(id, body.title || "無題の議事録", markdown, createdAt)
-    .run();
-  return json({ id, created_at: createdAt }, 200, origin);
-}
-
-async function handleGetMinutes(id, env, origin) {
-  if (!env.DB) {
-    return json({ error: "保存機能は未設定です（Cloudflare D1 が構成されていません）。" }, 501, origin);
-  }
-  const row = await env.DB.prepare(
-    "SELECT id, title, markdown, created_at FROM minutes WHERE id = ?"
-  )
-    .bind(id)
-    .first();
-  if (!row) {
-    return json({ error: "指定された議事録が見つかりません。" }, 404, origin);
-  }
-  return json(row, 200, origin);
+// M-2: 議事録の保存・閲覧は提供しない（BYOK の性質を維持するため Worker に議事録を残さない）。
+// 404 ではなく 410 を返し、意図的に提供していないことを示す。リクエストボディは読まない。
+function storageNotProvided(origin) {
+  return json(
+    { error: "議事録の保存機能は提供していません。議事録を残す場合は Notion 連携（/notify）をご利用ください。" },
+    410,
+    origin
+  );
 }
 
 /* ----------------------------- 外部API呼び出し ----------------------------- */
@@ -773,11 +743,7 @@ function rateLimitConfig(method, path) {
   if (path === "/notify") {
     return { name: "notify", limit: 20, ipLimit: 40, windowMs: 60_000 };
   }
-  // D1 書き込み
-  if (path === "/save") {
-    return { name: "save", limit: 30, ipLimit: 60, windowMs: 60_000 };
-  }
-  // その他（GET /minutes/:id 等）
+  // その他（/save・GET /minutes/:id 等）
   return { name: "default", limit: 60, ipLimit: 120, windowMs: 60_000 };
 }
 
