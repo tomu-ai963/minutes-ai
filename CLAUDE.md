@@ -8,7 +8,7 @@
 - 認証は無し（MVP 段階）。
 
 ## アーキテクチャ
-- **Frontend**：`frontend/index.html`（単一ファイルの静的サイト。GitHub Pages で配信）。
+- **Frontend**：`frontend/`（`index.html` + `app.js` + `style.css` の静的サイト。GitHub Pages で配信）。インライン JS/CSS は置かない（CSP で `script-src 'self'` / `style-src 'self'`、`connect-src` は既定 Worker のみ）。
 - **Backend**：`worker/src/index.js`（Cloudflare Workers）。
 - **文字起こし**：OpenAI Whisper API（`whisper-1`）。
 - **議事録生成**：Anthropic Claude API（既定 `claude-sonnet-4-6`）。
@@ -36,7 +36,7 @@
 
 ## デプロイ
 - Worker：`cd worker && wrangler deploy`
-- Frontend：`frontend/index.html` を GitHub Pages で公開し、画面上の「Worker エンドポイント URL」にデプロイ済み Worker の URL を設定する。
+- Frontend：`frontend/` を GitHub Pages で公開する。Worker を変える場合は `frontend/app.js` の `DEFAULT_WORKER_URL` と `frontend/index.html` の CSP `connect-src` を両方書き換える（`?worker=` での設定は廃止）。
 
 ## v2 追加機能（2026-06-30）
 - `POST /extract`：アクションアイテムのJSON抽出エンドポイント（`buildActionItemsPrompt()` を使用。`transcript` または `minutes` を受け取る）。

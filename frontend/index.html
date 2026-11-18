@@ -1,161 +1,15 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+  <!-- CSP: スクリプト・スタイルは同一オリジンのファイルのみ。通信先は既定の Worker のみ。
+       Worker を変えるときは app.js の DEFAULT_WORKER_URL と connect-src を両方書き換える。 -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://minutes-ai-worker.inverted-triangle-leef.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'" />
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
   <title>minutes-ai — AI議事録ツール</title>
-  <style>
-    :root {
-      --bg: #0f172a;
-      --panel: #1e293b;
-      --panel-2: #273449;
-      --border: #334155;
-      --text: #e2e8f0;
-      --muted: #94a3b8;
-      --accent: #6366f1;
-      --accent-hover: #4f46e5;
-      --danger: #ef4444;
-      --ok: #22c55e;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.6;
-    }
-    header {
-      padding: 24px 20px;
-      border-bottom: 1px solid var(--border);
-      text-align: center;
-    }
-    header h1 { margin: 0; font-size: 1.5rem; }
-    header p { margin: 4px 0 0; color: var(--muted); font-size: .9rem; }
-    main { max-width: 860px; margin: 0 auto; padding: 24px 20px 80px; }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 20px;
-    }
-    .card h2 { margin: 0 0 14px; font-size: 1.1rem; }
-    label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 6px; }
-    input[type="text"], input[type="password"], select {
-      width: 100%;
-      padding: 10px 12px;
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-      font-size: .95rem;
-      margin-bottom: 14px;
-    }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; }
-    .row > div { flex: 1; min-width: 220px; }
-    button {
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 10px 18px;
-      font-size: .95rem;
-      cursor: pointer;
-      transition: background .15s;
-    }
-    button:hover:not(:disabled) { background: var(--accent-hover); }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    button.secondary { background: var(--panel-2); border: 1px solid var(--border); }
-    button.secondary:hover:not(:disabled) { background: var(--border); }
-    .dropzone {
-      border: 2px dashed var(--border);
-      border-radius: 10px;
-      padding: 34px 20px;
-      text-align: center;
-      color: var(--muted);
-      cursor: pointer;
-      transition: border-color .15s, background .15s;
-    }
-    .dropzone.drag { border-color: var(--accent); background: rgba(99,102,241,.08); }
-    .dropzone strong { color: var(--text); }
-    .filename { margin-top: 12px; font-size: .9rem; color: var(--text); }
-    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
-    #status { margin-top: 14px; font-size: .9rem; min-height: 1.4em; }
-    #status.err { color: var(--danger); }
-    #status.ok { color: var(--ok); }
-    #status.work { color: var(--accent); }
-    .output-wrap { display: none; }
-    pre.output {
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 16px;
-      white-space: pre-wrap;
-      word-break: break-word;
-      max-height: 520px;
-      overflow: auto;
-      font-family: ui-monospace, "SF Mono", Consolas, monospace;
-      font-size: .9rem;
-    }
-    details { margin-top: 14px; }
-    summary { cursor: pointer; color: var(--muted); }
-    .hint { font-size: .8rem; color: var(--muted); margin-top: -8px; margin-bottom: 14px; }
-    a { color: var(--accent); }
-    .spinner {
-      display: inline-block; width: 14px; height: 14px;
-      border: 2px solid rgba(255,255,255,.3); border-top-color: #fff;
-      border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* アクションアイテム */
-    .table-wrap { overflow-x: auto; }
-    table.action-items {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: .9rem;
-    }
-    table.action-items th, table.action-items td {
-      text-align: left;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--border);
-      vertical-align: top;
-    }
-    table.action-items th {
-      color: var(--muted);
-      font-weight: 600;
-      font-size: .8rem;
-      white-space: nowrap;
-    }
-    table.action-items td.task { word-break: break-word; }
-    .assignee-unset { color: var(--muted); }
-    .badge {
-      display: inline-block;
-      padding: 2px 10px;
-      border-radius: 999px;
-      font-size: .78rem;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-    .badge.high { background: rgba(239,68,68,.18); color: #fca5a5; border: 1px solid rgba(239,68,68,.4); }
-    .badge.medium { background: rgba(234,179,8,.16); color: #fde047; border: 1px solid rgba(234,179,8,.4); }
-    .badge.low { background: rgba(34,197,94,.16); color: #86efac; border: 1px solid rgba(34,197,94,.4); }
-    .empty-note { color: var(--muted); font-size: .9rem; }
-
-    /* 連携設定 */
-    .integration { margin: 18px 0 4px; padding-top: 14px; border-top: 1px solid var(--border); }
-    .integration-head { color: var(--muted); font-size: .85rem; margin-bottom: 8px; }
-    label.check {
-      display: flex; align-items: center; gap: 8px;
-      color: var(--text); font-size: .95rem; margin-bottom: 10px; cursor: pointer;
-    }
-    label.check input { width: auto; margin: 0; }
-    .integration-fields { display: none; }
-    .integration-fields code {
-      background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: .85em;
-    }
-  </style>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header>
@@ -169,17 +23,19 @@
       <h2>⚙️ 設定</h2>
       <div>
         <label for="workerUrl">Worker エンドポイント URL</label>
-        <input id="workerUrl" type="text" placeholder="https://minutes-ai-worker.xxxx.workers.dev" />
-        <p class="hint">Cloudflare Workers にデプロイした URL を入力してください。</p>
+        <input id="workerUrl" type="text" autocomplete="off" />
+        <p class="hint">空欄のときは既定の Worker を使います。https の URL のみ受け付けます。</p>
       </div>
       <div class="row">
         <div>
           <label for="openaiKey">OpenAI APIキー（Whisper 用）</label>
           <input id="openaiKey" type="password" placeholder="sk-..." autocomplete="off" />
+          <p class="hint key-state" id="openaiKeyState"></p>
         </div>
         <div>
           <label for="anthropicKey">Anthropic APIキー（Claude 用）</label>
           <input id="anthropicKey" type="password" placeholder="sk-ant-..." autocomplete="off" />
+          <p class="hint key-state" id="anthropicKeyState"></p>
         </div>
       </div>
       <div class="row">
@@ -199,6 +55,7 @@
         <div id="notionFields" class="integration-fields">
           <label for="notionToken">Notion インテグレーション Token</label>
           <input id="notionToken" type="password" placeholder="secret_xxx" autocomplete="off" />
+          <p class="hint key-state" id="notionTokenState"></p>
           <label for="notionDbId">Notion データベース ID</label>
           <input id="notionDbId" type="text" placeholder="32桁の英数字" autocomplete="off" />
           <p class="hint">NotionでDBを開き、URLの <code>?v=</code> の手前にある32桁のIDです。</p>
@@ -212,6 +69,7 @@
         <div id="slackFields" class="integration-fields">
           <label for="slackWebhook">Slack Incoming Webhook URL</label>
           <input id="slackWebhook" type="password" placeholder="https://hooks.slack.com/services/..." autocomplete="off" />
+          <p class="hint key-state" id="slackWebhookState"></p>
           <p class="hint">Slack App 設定の Incoming Webhooks から取得できます。</p>
         </div>
       </div>
@@ -220,7 +78,7 @@
         <button id="saveSettings">設定を保存</button>
         <button id="clearSettings" class="secondary">保存した設定を消去</button>
       </div>
-      <p class="hint">※ APIキー・設定は <strong>このブラウザの localStorage</strong> にのみ保存され、サーバーには送信されません（API呼び出し時を除く）。</p>
+      <p class="hint">※ APIキー・設定は <strong>このブラウザの localStorage</strong> にのみ保存され、サーバーには送信されません（API呼び出し時を除く）。保存済みのキーは画面に表示しません。変更するときだけ入力して「設定を保存」してください。</p>
     </section>
 
     <!-- アップロード -->
@@ -231,8 +89,8 @@
         <span class="hint">対応形式: mp3 / mp4 / wav / m4a ・ 上限 25MB</span>
         <div id="filename" class="filename"></div>
       </div>
-      <input id="fileInput" type="file" accept=".mp3,.mp4,.wav,.m4a,audio/*,video/mp4" style="display:none" />
-      <div class="actions" style="margin-top:16px">
+      <input id="fileInput" type="file" accept=".mp3,.mp4,.wav,.m4a,audio/*,video/mp4" hidden />
+      <div class="actions mt-16">
         <button id="runBtn" disabled>議事録を生成</button>
       </div>
       <div id="status"></div>
@@ -241,7 +99,7 @@
     <!-- 出力 -->
     <section class="card output-wrap" id="outputWrap">
       <h2>📄 生成された議事録</h2>
-      <div class="actions" style="margin-bottom:14px">
+      <div class="actions mb-14">
         <button id="copyBtn" class="secondary">コピー</button>
         <button id="downloadBtn" class="secondary">Markdown をダウンロード</button>
         <button id="sendBtn" disabled>📤 Notion &amp; Slackに送る</button>
@@ -249,388 +107,20 @@
       <pre class="output" id="output"></pre>
       <details>
         <summary>文字起こし全文を表示</summary>
-        <pre class="output" id="transcript" style="margin-top:10px"></pre>
+        <pre class="output mt-10" id="transcript"></pre>
       </details>
     </section>
 
     <!-- アクションアイテム -->
     <section class="card output-wrap" id="actionItemsWrap">
       <h2>✅ アクションアイテム</h2>
-      <div class="actions" style="margin-bottom:14px">
+      <div class="actions mb-14">
         <button id="csvBtn" class="secondary">📥 CSVダウンロード</button>
       </div>
       <div id="actionItemsBody"></div>
     </section>
   </main>
 
-  <script>
-    "use strict";
-    const $ = (id) => document.getElementById(id);
-    const LS = {
-      url: "minutesai_worker_url",
-      openai: "minutesai_openai_key",
-      anthropic: "minutesai_anthropic_key",
-      lang: "minutesai_language",
-      notionEnabled: "minutesai_notion_enabled",
-      notionToken: "minutesai_notion_token",
-      notionDbId: "minutesai_notion_db_id",
-      slackEnabled: "minutesai_slack_enabled",
-      slackWebhook: "minutesai_slack_webhook",
-    };
-    const ALLOWED_EXT = ["mp3", "mp4", "wav", "m4a"];
-    const MAX_SIZE = 25 * 1024 * 1024;
-    let selectedFile = null;
-    // 直近に生成されたアクションアイテム（/minutes レスポンスから自動セット）
-    let currentActionItems = [];
-    let minutesGenerated = false;
-    const PRIORITY_LABEL = { high: "高", medium: "中", low: "低" };
-
-    /* ---- 設定の読み書き（localStorage） ---- */
-    function loadSettings() {
-      $("workerUrl").value = localStorage.getItem(LS.url) || "";
-      $("openaiKey").value = localStorage.getItem(LS.openai) || "";
-      $("anthropicKey").value = localStorage.getItem(LS.anthropic) || "";
-      $("language").value = localStorage.getItem(LS.lang) || "";
-      // 連携設定
-      $("notionEnabled").checked = localStorage.getItem(LS.notionEnabled) === "1";
-      $("notionToken").value = localStorage.getItem(LS.notionToken) || "";
-      $("notionDbId").value = localStorage.getItem(LS.notionDbId) || "";
-      $("slackEnabled").checked = localStorage.getItem(LS.slackEnabled) === "1";
-      $("slackWebhook").value = localStorage.getItem(LS.slackWebhook) || "";
-      syncIntegrationFields();
-      updateSendButton();
-    }
-    function saveSettings() {
-      localStorage.setItem(LS.url, $("workerUrl").value.trim().replace(/\/+$/, ""));
-      localStorage.setItem(LS.openai, $("openaiKey").value.trim());
-      localStorage.setItem(LS.anthropic, $("anthropicKey").value.trim());
-      localStorage.setItem(LS.lang, $("language").value);
-      localStorage.setItem(LS.notionEnabled, $("notionEnabled").checked ? "1" : "0");
-      localStorage.setItem(LS.notionToken, $("notionToken").value.trim());
-      localStorage.setItem(LS.notionDbId, $("notionDbId").value.trim());
-      localStorage.setItem(LS.slackEnabled, $("slackEnabled").checked ? "1" : "0");
-      localStorage.setItem(LS.slackWebhook, $("slackWebhook").value.trim());
-      updateSendButton();
-      setStatus("設定を保存しました。", "ok");
-    }
-    function clearSettings() {
-      Object.values(LS).forEach((k) => localStorage.removeItem(k));
-      loadSettings();
-      setStatus("保存した設定を消去しました。", "ok");
-    }
-
-    /* ---- 連携設定のフィールド表示切り替え ---- */
-    function syncIntegrationFields() {
-      $("notionFields").style.display = $("notionEnabled").checked ? "block" : "none";
-      $("slackFields").style.display = $("slackEnabled").checked ? "block" : "none";
-    }
-
-    /* ---- ステータス表示 ---- */
-    function setStatus(msg, kind, busy) {
-      const el = $("status");
-      el.className = kind || "";
-      el.innerHTML = (busy ? '<span class="spinner"></span>' : "") + (msg || "");
-    }
-
-    /* ---- ファイル選択 ---- */
-    function pickFile(file) {
-      if (!file) return;
-      const ext = file.name.includes(".") ? file.name.split(".").pop().toLowerCase() : "";
-      if (!ALLOWED_EXT.includes(ext)) {
-        setStatus("非対応のファイル形式です。対応形式: mp3 / mp4 / wav / m4a", "err");
-        selectedFile = null; $("runBtn").disabled = true; $("filename").textContent = "";
-        return;
-      }
-      if (file.size > MAX_SIZE) {
-        setStatus("ファイルサイズが上限（25MB）を超えています。", "err");
-        selectedFile = null; $("runBtn").disabled = true; $("filename").textContent = "";
-        return;
-      }
-      selectedFile = file;
-      $("filename").textContent = `選択中: ${file.name}（${(file.size / 1024 / 1024).toFixed(1)}MB）`;
-      $("runBtn").disabled = false;
-      setStatus("");
-    }
-
-    /* ---- 議事録生成（Worker の /minutes を呼ぶ） ---- */
-    async function run() {
-      const url = localStorage.getItem(LS.url) || $("workerUrl").value.trim().replace(/\/+$/, "");
-      const openaiKey = $("openaiKey").value.trim();
-      const anthropicKey = $("anthropicKey").value.trim();
-
-      if (!url) { setStatus("Worker エンドポイント URL を入力してください。", "err"); return; }
-      if (!openaiKey) { setStatus("OpenAI APIキーを入力してください。", "err"); return; }
-      if (!anthropicKey) { setStatus("Anthropic APIキーを入力してください。", "err"); return; }
-      if (!selectedFile) { setStatus("音声ファイルを選択してください。", "err"); return; }
-
-      $("runBtn").disabled = true;
-      setStatus("文字起こし・議事録を生成しています…（音声の長さによっては数分かかります）", "work", true);
-
-      const fd = new FormData();
-      fd.append("file", selectedFile);
-      const lang = $("language").value;
-      if (lang) fd.append("language", lang);
-
-      try {
-        const resp = await fetch(url + "/minutes", {
-          method: "POST",
-          headers: { "x-openai-key": openaiKey, "x-anthropic-key": anthropicKey },
-          body: fd,
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-          setStatus(data.error || `エラーが発生しました（${resp.status}）。`, "err");
-          return;
-        }
-        $("output").textContent = data.minutes || "";
-        $("transcript").textContent = data.transcript || "";
-        $("outputWrap").style.display = "block";
-        // アクションアイテムを保持・表示する
-        currentActionItems = Array.isArray(data.action_items) ? data.action_items : [];
-        renderActionItems(currentActionItems);
-        minutesGenerated = true;
-        updateSendButton();
-        setStatus("議事録を生成しました。", "ok");
-        $("outputWrap").scrollIntoView({ behavior: "smooth" });
-      } catch (e) {
-        setStatus("通信に失敗しました。Worker の URL と CORS 設定をご確認ください。", "err");
-      } finally {
-        $("runBtn").disabled = false;
-      }
-    }
-
-    /* ---- アクションアイテム表示 ---- */
-    function escapeHtml(s) {
-      return String(s == null ? "" : s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-    }
-    function renderActionItems(items) {
-      $("actionItemsWrap").style.display = "block";
-      const body = $("actionItemsBody");
-      if (!Array.isArray(items) || items.length === 0) {
-        body.innerHTML = '<p class="empty-note">アクションアイテムはありませんでした。</p>';
-        return;
-      }
-      const rows = items.map((it) => {
-        const prio = ["high", "medium", "low"].includes(it.priority) ? it.priority : "medium";
-        const prioLabel = PRIORITY_LABEL[prio] || "中";
-        const isUnset = !it.assignee || it.assignee === "未定";
-        const assigneeCell = isUnset
-          ? '<span class="assignee-unset">未定</span>'
-          : escapeHtml(it.assignee);
-        const due = it.due_label || (it.due ? escapeHtml(it.due) : "期限未定");
-        return `<tr>
-          <td><span class="badge ${prio}">${prioLabel}</span></td>
-          <td>${assigneeCell}</td>
-          <td class="task">${escapeHtml(it.task)}</td>
-          <td>${escapeHtml(due)}</td>
-        </tr>`;
-      }).join("");
-      body.innerHTML = `<div class="table-wrap">
-        <table class="action-items">
-          <thead>
-            <tr><th>優先度</th><th>担当者</th><th>タスク</th><th>期限</th></tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
-    }
-
-    /* ---- CSV ダウンロード（BOM付き UTF-8・Excel 日本語対応） ---- */
-    function csvEscape(value) {
-      const s = String(value == null ? "" : value);
-      // ダブルクォート・カンマ・改行を含む場合はクォートで囲む
-      if (/[",\r\n]/.test(s)) {
-        return '"' + s.replace(/"/g, '""') + '"';
-      }
-      return s;
-    }
-    function downloadCsv() {
-      if (!currentActionItems.length) {
-        setStatus("ダウンロードできるアクションアイテムがありません。", "err");
-        return;
-      }
-      const header = ["No", "担当者", "タスク", "期限", "優先度"];
-      const lines = [header.map(csvEscape).join(",")];
-      currentActionItems.forEach((it, i) => {
-        const due = it.due_label || it.due || "期限未定";
-        const prioLabel = PRIORITY_LABEL[it.priority] || it.priority || "中";
-        lines.push([
-          csvEscape(it.id != null ? it.id : i + 1),
-          csvEscape(it.assignee || "未定"),
-          csvEscape(it.task || ""),
-          csvEscape(due),
-          csvEscape(prioLabel),
-        ].join(","));
-      });
-      // CRLF 改行 + 先頭 BOM(﻿) で Excel との互換性を高める
-      const csv = "﻿" + lines.join("\r\n");
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const d = new Date();
-      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `action-items-${stamp}.csv`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }
-
-    /* ---- Notion / Slack 連携 ---- */
-    // 送信ボタンの表示/有効状態を更新する。
-    // 両方OFF → 非表示。少なくとも一方ON かつ議事録生成済み → 有効。
-    function updateSendButton() {
-      const notionOn = $("notionEnabled").checked;
-      const slackOn = $("slackEnabled").checked;
-      const btn = $("sendBtn");
-      if (!notionOn && !slackOn) {
-        btn.style.display = "none";
-        return;
-      }
-      btn.style.display = "";
-      btn.disabled = !minutesGenerated;
-    }
-
-    // 議事録の先頭の見出し行（# ...）からタイトルを抽出。無ければ日付ベースで生成。
-    function deriveTitle() {
-      const md = $("output").textContent || "";
-      const m = md.match(/^#\s+(.+)$/m);
-      if (m && m[1].trim()) return m[1].trim();
-      const d = new Date();
-      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      return `議事録_${stamp}`;
-    }
-
-    async function sendToIntegrations() {
-      const url = localStorage.getItem(LS.url) || $("workerUrl").value.trim().replace(/\/+$/, "");
-      if (!url) { setStatus("Worker エンドポイント URL を入力してください。", "err"); return; }
-
-      const notionEnabled = $("notionEnabled").checked;
-      const slackEnabled = $("slackEnabled").checked;
-      if (!notionEnabled && !slackEnabled) {
-        setStatus("Notion・Slack のいずれかを有効にしてください。", "err");
-        return;
-      }
-
-      const payload = {
-        minutes: $("output").textContent || "",
-        action_items: currentActionItems,
-        title: deriveTitle(),
-        notion: {
-          enabled: notionEnabled,
-          token: $("notionToken").value.trim(),
-          database_id: $("notionDbId").value.trim(),
-        },
-        slack: {
-          enabled: slackEnabled,
-          webhook_url: $("slackWebhook").value.trim(),
-        },
-      };
-
-      $("sendBtn").disabled = true;
-      setStatus("Notion / Slack に送信しています…", "work", true);
-
-      try {
-        const resp = await fetch(url + "/notify", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-          setStatus(data.error || `エラーが発生しました（${resp.status}）。`, "err");
-          return;
-        }
-
-        // 結果メッセージを組み立てる
-        const parts = [];
-        let anyFail = false;
-        if (notionEnabled) {
-          if (data.notion_ok) {
-            parts.push(data.notion_page_url
-              ? `✅ <a href="${escapeHtml(data.notion_page_url)}" target="_blank" rel="noopener">Notionページを開く</a>`
-              : "✅ Notionに保存しました");
-          } else {
-            anyFail = true;
-            parts.push(`⚠️ Notion保存失敗: ${escapeHtml(data.notion_error || "不明なエラー")}`);
-          }
-        }
-        if (slackEnabled) {
-          if (data.slack_ok) {
-            parts.push("Slackに通知しました");
-          } else {
-            anyFail = true;
-            parts.push(`⚠️ Slack通知失敗: ${escapeHtml(data.slack_error || "不明なエラー")}`);
-          }
-        }
-
-        const el = $("status");
-        el.className = anyFail ? "err" : "ok";
-        el.innerHTML = parts.join(" / ");
-      } catch (e) {
-        setStatus("通信に失敗しました。Worker の URL と CORS 設定をご確認ください。", "err");
-      } finally {
-        updateSendButton();
-      }
-    }
-
-    /* ---- コピー / ダウンロード ---- */
-    async function copyOutput() {
-      const text = $("output").textContent;
-      try {
-        await navigator.clipboard.writeText(text);
-        setStatus("議事録をコピーしました。", "ok");
-      } catch {
-        setStatus("コピーに失敗しました。手動で選択してコピーしてください。", "err");
-      }
-    }
-    function downloadOutput() {
-      const text = $("output").textContent;
-      const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
-      const a = document.createElement("a");
-      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-      a.href = URL.createObjectURL(blob);
-      a.download = `議事録_${stamp}.md`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }
-
-    /* ---- イベント登録 ---- */
-    function init() {
-      loadSettings();
-      // URL に ?worker=... があれば Worker エンドポイントを取り込み保存する（ワンクリック設定用）
-      const qsWorker = new URLSearchParams(location.search).get("worker");
-      if (qsWorker) {
-        const clean = qsWorker.trim().replace(/\/+$/, "");
-        $("workerUrl").value = clean;
-        localStorage.setItem(LS.url, clean);
-        setStatus("Worker エンドポイントを URL から設定しました。APIキーを入力してください。", "ok");
-      }
-      $("saveSettings").addEventListener("click", saveSettings);
-      $("clearSettings").addEventListener("click", clearSettings);
-      $("runBtn").addEventListener("click", run);
-      $("copyBtn").addEventListener("click", copyOutput);
-      $("downloadBtn").addEventListener("click", downloadOutput);
-      $("csvBtn").addEventListener("click", downloadCsv);
-      $("sendBtn").addEventListener("click", sendToIntegrations);
-      // 連携チェックボックス：フィールド表示と送信ボタン状態を更新
-      $("notionEnabled").addEventListener("change", () => { syncIntegrationFields(); updateSendButton(); });
-      $("slackEnabled").addEventListener("change", () => { syncIntegrationFields(); updateSendButton(); });
-
-      const dz = $("dropzone");
-      dz.addEventListener("click", () => $("fileInput").click());
-      $("fileInput").addEventListener("change", (e) => pickFile(e.target.files[0]));
-      ["dragenter", "dragover"].forEach((ev) =>
-        dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); })
-      );
-      ["dragleave", "drop"].forEach((ev) =>
-        dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); })
-      );
-      dz.addEventListener("drop", (e) => pickFile(e.dataTransfer.files[0]));
-    }
-    init();
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>

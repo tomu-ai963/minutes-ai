@@ -3,7 +3,7 @@
 BYOK（Bring Your Own Key）モデルの **AI議事録自動生成ツール**。
 音声ファイルをアップロードするだけで、文字起こし → 構造化された議事録（Markdown）を生成します。
 
-- **Frontend**：静的HTML 1ファイル（GitHub Pages）
+- **Frontend**：静的サイト（`index.html` + `app.js` + `style.css`。GitHub Pages）
 - **Backend**：Cloudflare Workers
 - **文字起こし**：OpenAI Whisper API（ユーザーのキー）
 - **議事録生成**：Anthropic Claude API（ユーザーのキー）
@@ -20,12 +20,11 @@ APIキーは**ブラウザの localStorage にのみ保存**され、サーバ�
 | 公開サイト（GitHub Pages） | https://tomu-ai963.github.io/minutes-ai/ |
 | Worker API（Cloudflare） | https://minutes-ai-worker.inverted-triangle-leef.workers.dev |
 
-### ⚡ ワンクリック設定
-以下のリンクを開くと、Worker エンドポイントが自動入力されます（あとはAPIキーを入力するだけ）：
+### Worker の設定について
+公開サイトは既定で上記の Worker に接続します。開いて API キーを入力するだけで使えます。
 
-**https://tomu-ai963.github.io/minutes-ai/?worker=https://minutes-ai-worker.inverted-triangle-leef.workers.dev**
-
-> `?worker=<Worker URL>` を付けると、その値が画面に取り込まれ localStorage に保存されます。
+> 以前の `?worker=<Worker URL>` による自動設定は廃止しました（細工したリンクで送信先を差し替えられ、API キーが第三者の Worker に送られるのを防ぐため）。クエリに付けても無視されます。
+> 以前の方式で許可外の Worker URL が保存されていた場合は、次回表示時に破棄して既定の Worker に戻します。
 
 ---
 
@@ -40,7 +39,9 @@ minutes-ai/
 │   ├── capabilities.yaml  # できること・できないこと
 │   └── integration.md     # エージェント統合手順
 ├── frontend/
-│   └── index.html         # 単一ファイルのWebアプリ
+│   ├── index.html         # 画面（CSP メタタグ付き）
+│   ├── app.js             # 画面のロジック（インライン JS は置かない）
+│   └── style.css          # スタイル（インライン style は置かない）
 └── worker/
     ├── src/index.js       # Cloudflare Workers 本体
     └── wrangler.toml
@@ -76,17 +77,21 @@ Worker は議事録を保存しません（BYOK の性質を維持するため�
 議事録を残したい場合は、設定画面で Notion 連携（`/notify`）を有効にしてください。
 
 ### 2. フロントエンドを公開
-`frontend/index.html` を GitHub Pages 等で配信します。
-```bash
-# 例：リポジトリの設定で Pages を有効化し、frontend/ を公開ディレクトリに指定
-```
-ローカルで試す場合はファイルをブラウザで直接開くだけでも動作します。
+`frontend/` を GitHub Pages 等で配信します（`.github/workflows/pages.yml` が main への push で `frontend/` を公開します）。
+
+**独自の Worker を使う場合**は、次の2か所を自分の Worker の URL（https のみ）に書き換えてください。片方だけだと接続できません。
+- `frontend/app.js` の `DEFAULT_WORKER_URL`
+- `frontend/index.html` の CSP メタタグの `connect-src`
+
+ローカルで画面を確認する場合は `frontend/` を HTTP サーバーで配信してください（例: `npx http-server frontend -p 5173`）。
+`file://` で直接開く方式は、CSP（`script-src 'self'`）の下では動作を保証しません。
+なお本番 Worker の CORS は `ALLOWED_ORIGIN`（GitHub Pages の Origin）のみ許可しているため、ローカルの画面から本番 Worker への通信はブラウザに拒否されます。
 
 ### 3. 使い方
 1. 公開した画面を開く。
 2. **設定**に以下を入力して「設定を保存」：
-   - Worker エンドポイント URL（手順1の URL）
    - OpenAI APIキー / Anthropic APIキー
+   - （任意）Worker エンドポイント URL（空欄なら既定の Worker）
    - （任意）音声の言語
 3. 音声ファイル（mp3/mp4/wav/m4a・25MB以下）を選択。
 4. **「議事録を生成」**をクリック。
@@ -131,7 +136,15 @@ Worker は議事録を保存しません（BYOK の性質を維持するため�
 
 ## セキュリティ / プライバシー
 - API キーはブラウザの localStorage に保存され、API 呼び出し時にヘッダーで Worker に渡されます。Worker はそれを外部 API 呼び出しに使うだけで保存しません。
+- 保存済みの API キー・Token・Webhook URL は入力欄に書き戻さず、「設定済み（末尾4文字）」とだけ表示します。入力欄に値を入れて「設定を保存」したときだけ上書きします。
 - 共有端末では使用後に「保存した設定を消去」を実行してください。
+
+### フロントエンドの CSP
+`frontend/index.html` の `<head>` 先頭に CSP メタタグを置いています。
+- `default-src 'none'`、`script-src 'self'`、`style-src 'self'`（インラインのスクリプト・スタイル・イベントハンドラは使わない）
+- `connect-src` は既定の Worker（`https://minutes-ai-worker.inverted-triangle-leef.workers.dev`）のみ
+- Worker URL は https のみ受け付け、CSP で許可した Worker 以外は設定時にエラーにします
+- Notion のページリンクは `https://www.notion.so/` で始まる URL のときだけリンクにします（それ以外は「保存しました」の表示のみ）
 
 ### SSRF 対策（`/notify` の Webhook）
 `/notify` の Slack Webhook URL はユーザー指定のため、外部送信前に宛先を検証しています（`worker/src/lib/url-guard.js`）:
